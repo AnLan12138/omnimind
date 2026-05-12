@@ -1,0 +1,59 @@
+{
+  "sessions": [
+    {
+      "id": "35e5b681-fdf8-4484-9701-8dd6d385ae18",
+      "name": "1",
+      "protocol": "telnet",
+      "host": "127.0.0.1",
+      "port": 2000,
+      "keepAliveSec": 30,
+      "telnetTermType": "XTERM-256COLOR",
+      "baudRate": 115200,
+      "dataBits": 8,
+      "stopBits": 1,
+      "parity": "none",
+      "flowControl": "none",
+      "sortOrder": 0,
+      "createdAt": "2026-05-11T14:09:02Z",
+      "updatedAt": "2026-05-11T14:09:02Z"
+    },
+    {
+      "id": "1728e363-2bc3-4e9b-bc10-25a85f4b7a2c",
+      "name": "1",
+      "protocol": "ssh",
+      "host": "192.168.65.130",
+      "port": 22,
+      "username": "admin",
+      "password": "782150",
+      "useAgent": true,
+      "keepAliveSec": 30,
+      "telnetTermType": "XTERM-256COLOR",
+      "baudRate": 115200,
+      "dataBits": 8,
+      "stopBits": 1,
+      "parity": "none",
+      "flowControl": "none",
+      "folderId": "c1f961ad-f23b-4bd3-ab5b-443d22e0bd3a",
+      "sortOrder": 0,
+      "createdAt": "2026-05-11T16:38:44Z",
+      "updatedAt": "2026-05-11T16:38:44Z"
+    }
+  ],
+  "folders": [
+    {
+      "id": "c1f961ad-f23b-4bd3-ab5b-443d22e0bd3a",
+      "name": "321321321",
+      "sortOrder": 0
+    },
+    {
+      "id": "56f3955b-33be-4613-8d23-bc5e1df66929",
+      "name": "偶的覅偶是地方",
+      "sortOrder": 1
+    },
+    {
+      "id": "ace4a7af-786b-4df2-8789-b37596460823",
+      "name": "就好比吧",
+      "sortOrder": 2
+    }
+  ]
+}
