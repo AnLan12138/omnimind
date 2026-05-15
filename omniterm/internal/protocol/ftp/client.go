@@ -2,6 +2,7 @@ package ftp
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +14,7 @@ import (
 
 	"github.com/jlaffaye/ftp"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 )
 
 type FileInfo struct {
@@ -45,15 +46,31 @@ func (c *Client) Connect(ctx context.Context, cfg protocol.ConnConfig) error {
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	if cfg.Port == 0 {
-		cfg.Port = 21
-		addr = fmt.Sprintf("%s:21", cfg.Host)
+		if cfg.UseFTPS == "implicit" {
+			cfg.Port = 990
+		} else {
+			cfg.Port = 21
+		}
+		addr = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	}
 
 	opts := []ftp.DialOption{
 		ftp.DialWithTimeout(15 * time.Second),
 	}
 
-	conn, err := ftp.Dial(addr, opts...)
+	var conn *ftp.ServerConn
+	var err error
+
+	if cfg.UseFTPS == "explicit" || cfg.UseFTPS == "implicit" {
+		tlsOpt := ftp.DialWithTLS(&tls.Config{
+			ServerName:         cfg.Host,
+			InsecureSkipVerify: cfg.TLSSkipVerify,
+		})
+		conn, err = ftp.Dial(addr, append(opts, tlsOpt)...)
+	} else {
+		conn, err = ftp.Dial(addr, opts...)
+	}
+
 	if err != nil {
 		c.setError(fmt.Errorf("ftp dial: %w", err))
 		return err

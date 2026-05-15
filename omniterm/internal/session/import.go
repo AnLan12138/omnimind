@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 
 	"github.com/google/uuid"
 )

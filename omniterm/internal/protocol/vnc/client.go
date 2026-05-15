@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 )
 
 const (

@@ -32,14 +32,14 @@ const defaults: AppSettings = {
 
 function load(): AppSettings {
   try {
-    const raw = localStorage.getItem('omniterm-settings')
+    const raw = localStorage.getItem('omnimind-settings')
     if (raw) return { ...defaults, ...JSON.parse(raw) }
   } catch {}
   return { ...defaults }
 }
 
 function save(s: AppSettings) {
-  localStorage.setItem('omniterm-settings', JSON.stringify(s))
+  localStorage.setItem('omnimind-settings', JSON.stringify(s))
 }
 
 interface ConfigStore extends AppSettings {

@@ -2,8 +2,7 @@ package mosh
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -12,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 )
 
 // MOSH client - implements the Mobile Shell protocol for high-latency connections.
@@ -94,8 +93,13 @@ func (c *Client) Connect(ctx context.Context, cfg protocol.ConnConfig) error {
 		return err
 	}
 
-	// Step 3: Generate encryption key from mosh key
-	c.key = []byte(moshKey)[:16]
+	// Step 3: Decode the base64-encoded 16-byte key from mosh-server
+	keyBytes, err := base64.StdEncoding.DecodeString(moshKey)
+	if err != nil || len(keyBytes) != 16 {
+		c.setError(fmt.Errorf("mosh: invalid key from server: %s", moshKey))
+		return fmt.Errorf("mosh: invalid key length %d", len(keyBytes))
+	}
+	c.key = keyBytes
 
 	// Step 4: Establish UDP connection
 	udpAddr := fmt.Sprintf("%s:%d", cfg.Host, moshPort)
@@ -172,8 +176,8 @@ func (c *Client) readLoop(ctx context.Context) {
 				return
 			}
 			// Decrypt and extract terminal output
-			plain := c.decrypt(buf[:n])
-			if len(plain) > 13 && c.onData != nil {
+			plain := c.decryptPacket(buf[:n])
+			if plain != nil && len(plain) > 13 && c.onData != nil {
 				// Skip MOSH header (12 bytes seq + 1 byte type)
 				c.onData(plain[13:])
 			}
@@ -182,42 +186,21 @@ func (c *Client) readLoop(ctx context.Context) {
 }
 
 func (c *Client) sendEncrypted(data []byte) error {
-	encrypted := c.encrypt(data)
-	_, err := c.conn.Write(encrypted)
+	encrypted, err := c.ocbEncryptPacket(data)
+	if err != nil {
+		return err
+	}
+	_, err = c.conn.Write(encrypted)
 	return err
 }
 
-// Simplified AES-OCB encryption (production would use a proper OCB implementation)
-func (c *Client) encrypt(data []byte) []byte {
-	if len(c.key) < 16 { return data }
-	block, _ := aes.NewCipher(c.key[:16])
-	// Simple AES-CTR mode as approximation
-	nonce := make([]byte, block.BlockSize())
-	rand.Read(nonce)
-	result := make([]byte, len(nonce)+len(data))
-	copy(result, nonce)
-	for i := 0; i < len(data); i += block.BlockSize() {
-		end := i + block.BlockSize()
-		if end > len(data) { end = len(data) }
-		block.Encrypt(result[len(nonce)+i:len(nonce)+end], data[i:end])
+func (c *Client) decryptPacket(data []byte) []byte {
+	plain, err := c.ocbDecryptPacket(data)
+	if err != nil {
+		c.setError(fmt.Errorf("mosh decrypt: %w", err))
+		return nil
 	}
-	return result
-}
-
-func (c *Client) decrypt(data []byte) []byte {
-	if len(c.key) < 16 || len(data) < aes.BlockSize { return data }
-	block, _ := aes.NewCipher(c.key[:16])
-	bs := block.BlockSize()
-	nonce := data[:bs]
-	ciphertext := data[bs:]
-	result := make([]byte, len(ciphertext))
-	for i := 0; i < len(ciphertext); i += bs {
-		end := i + bs
-		if end > len(ciphertext) { end = len(ciphertext) }
-		block.Decrypt(result[i:end], ciphertext[i:end])
-	}
-	_ = nonce
-	return result
+	return plain
 }
 
 func (c *Client) setState(s protocol.ConnState) {

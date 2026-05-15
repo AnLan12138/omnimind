@@ -250,7 +250,7 @@ export default function FilePanel({ connId, searchTerm = '', onClose }: Props) {
               onDragStart={e => {
                 if (f.isDir) { e.preventDefault(); return }
                 // Start download for drag-to-desktop
-                const p = '/tmp/omniterm-dl/' + f.name
+                const p = '/tmp/omnimind-dl/' + f.name
                 SFTPDownload(connId, f.path, p).catch(() => {})
                 e.dataTransfer.effectAllowed = 'copy'
                 e.dataTransfer.setData('text/plain', f.name)

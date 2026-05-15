@@ -10,6 +10,7 @@ import { useThemeStore } from '../stores/themeStore'
 import { useConfigStore } from '../stores/configStore'
 import { useBroadcastStore } from '../stores/broadcastStore'
 import { useRecordingStore } from '../stores/recordingStore'
+import { useShortcutStore, matchShortcut, registerShortcutAction, getShortcutAction } from '../stores/shortcutStore'
 
 interface Props { connId: string; onDisconnect: (connId: string) => void }
 interface CtxMenu { x: number; y: number; visible: boolean }
@@ -18,6 +19,8 @@ export default function Terminal({ connId, onDisconnect }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const updateTabState = useTabStore(s => s.updateTabState)
+  const activeTabId = useTabStore(s => s.activeTabId)
+  const tab = useTabStore(s => s.tabs.find(t => t.connId === connId))
   const terminalTheme = useThemeStore(s => s.theme)
   const terminalFontSize = useConfigStore(s => s.terminalFontSize)
   const terminalFontFamily = useConfigStore(s => s.terminalFontFamily)
@@ -51,6 +54,14 @@ export default function Terminal({ connId, onDisconnect }: Props) {
     xterm.options.theme = terminalTheme
     try { xterm.refresh(0, xterm.rows) } catch {}
   }, [terminalFontSize, terminalFontFamily, terminalCursorStyle, terminalScrollback, terminalTheme])
+
+  // Auto-focus terminal when this tab becomes active
+  useEffect(() => {
+    if (tab?.active) {
+      const timer = setTimeout(() => xtermRef.current?.focus(), 50)
+      return () => clearTimeout(timer)
+    }
+  }, [activeTabId, tab?.active])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -140,10 +151,37 @@ export default function Terminal({ connId, onDisconnect }: Props) {
       }
     })
 
+    // Register terminal-specific shortcut actions
+    registerShortcutAction('copy', e => { e.preventDefault(); copy(); return true })
+    registerShortcutAction('paste', e => { e.preventDefault(); paste(); return true })
+    registerShortcutAction('clearBuffer', e => { e.preventDefault(); xterm.clear(); return true })
+    registerShortcutAction('saveTerminal', e => {
+      e.preventDefault()
+      const lines: string[] = []
+      for (let i = 0; i < xterm.buffer.active.length; i++) {
+        const line = xterm.buffer.active.getLine(i)
+        if (line) lines.push(line.translateToString())
+      }
+      const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'terminal.txt'; a.click()
+      return true
+    })
+    registerShortcutAction('selectAll', e => { e.preventDefault(); xterm.selectAll(); return true })
+    registerShortcutAction('zoomIn', e => { e.preventDefault(); const sz = (xterm.options.fontSize || 14) + 1; xterm.options.fontSize = Math.max(8, Math.min(36, sz)); fit.fit(); return true })
+    registerShortcutAction('zoomOut', e => { e.preventDefault(); const sz = (xterm.options.fontSize || 14) - 1; xterm.options.fontSize = Math.max(8, Math.min(36, sz)); fit.fit(); return true })
+    registerShortcutAction('resetZoom', e => { e.preventDefault(); xterm.options.fontSize = terminalFontSize; fit.fit(); return true })
+
     xterm.attachCustomKeyEventHandler(e => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'C') { copy(); return false }
-      if (e.ctrlKey && e.shiftKey && e.key === 'V') { paste(); return false }
-      if (e.ctrlKey && e.shiftKey && e.key === 'F') return false
+      const shortcuts = useShortcutStore.getState().shortcuts
+      const terminalActions = ['copy', 'paste', 'clearBuffer', 'saveTerminal', 'selectAll', 'find', 'zoomIn', 'zoomOut', 'resetZoom']
+      for (const s of shortcuts) {
+        if (!terminalActions.includes(s.id)) continue
+        if (s.keys && matchShortcut(e, s.keys)) {
+          const handler = getShortcutAction(s.id)
+          if (handler) { handler(e) }
+          return false
+        }
+      }
       return true
     })
 
@@ -163,17 +201,20 @@ export default function Terminal({ connId, onDisconnect }: Props) {
     <div className="flex flex-col h-full bg-vscode-bg">
       <div ref={containerRef} className="flex-1 overflow-hidden" />
       {ctxMenu.visible && (
-        <div className="fixed z-[100] w-40 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
-          {[
-            { label: 'Copy', action: () => { copy(); setCtxMenu(p => ({ ...p, visible: false })) }, key: 'Ctrl+Shift+C' },
-            { label: 'Paste', action: () => { paste(); setCtxMenu(p => ({ ...p, visible: false })) }, key: 'Ctrl+Shift+V' },
-            { label: 'Clear Buffer', action: () => { xtermRef.current?.clear(); setCtxMenu(p => ({ ...p, visible: false })) }, key: '' },
-            { label: 'Select All', action: () => { xtermRef.current?.selectAll(); setCtxMenu(p => ({ ...p, visible: false })) }, key: '' },
-          ].map(item => (
-            <button key={item.label} onClick={item.action} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">
-              {item.label} <span className="ml-auto text-[10px] text-vscode-text-dim">{item.key}</span>
-            </button>
-          ))}
+        <div className="fixed z-[100] w-44 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+          {(() => {
+            const sk = (id: string) => useShortcutStore.getState().shortcuts.find(s => s.id === id)?.keys || ''
+            return [
+              { label: '复制', action: () => { copy(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'copy' },
+              { label: '粘贴', action: () => { paste(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'paste' },
+              { label: '清除缓冲', action: () => { xtermRef.current?.clear(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'clearBuffer' },
+              { label: '全选', action: () => { xtermRef.current?.selectAll(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'selectAll' },
+            ].map(item => (
+              <button key={item.label} onClick={item.action} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">
+                {item.label} <span className="ml-auto text-[10px] text-vscode-text-dim">{sk(item.kid)}</span>
+              </button>
+            ))
+          })()}
         </div>
       )}
     </div>

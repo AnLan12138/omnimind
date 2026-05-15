@@ -6,13 +6,21 @@ const stateColors: Record<string, string> = {
   connected: '#4ec9b0', connecting: '#cca700', reconnecting: '#cca700', error: '#f44747', disconnected: '#6a6a6a',
 }
 
-export default function TabBar() {
-  const { tabs, activeTabId, setActive, removeTab } = useTabStore()
+interface Props { onCloneTab?: (tab: Tab) => void }
+
+export default function TabBar({ onCloneTab }: Props) {
+  const { tabs, activeTabId, setActive, removeTab, reorderTabs } = useTabStore()
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [ctxTab, setCtxTab] = useState<{ tab: Tab; x: number; y: number } | null>(null)
 
   const handleDragStart = (idx: number) => setDragIdx(idx)
-  const handleDragOver = (e: React.DragEvent, idx: number) => { e.preventDefault(); if (dragIdx !== null && dragIdx !== idx) { /* reorder would go here */ } }
+  const handleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault()
+    if (dragIdx !== null && dragIdx !== idx) {
+      reorderTabs(dragIdx, idx)
+      setDragIdx(idx)
+    }
+  }
   const handleDragEnd = () => setDragIdx(null)
   const handleCtx = (e: React.MouseEvent, tab: Tab) => { e.preventDefault(); setCtxTab({ tab, x: e.clientX, y: e.clientY }) }
 
@@ -44,7 +52,8 @@ export default function TabBar() {
       {ctxTab && (
         <div className="fixed z-50 w-36 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctxTab.x, top: ctxTab.y }}
           onClick={() => setCtxTab(null)}>
-          <button className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">
+          <button onClick={() => { onCloneTab?.(ctxTab.tab); setCtxTab(null) }}
+            className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">
             <Copy size={11} /> Clone Tab
           </button>
           <button onClick={() => { removeTab(ctxTab.tab.id); setCtxTab(null) }}

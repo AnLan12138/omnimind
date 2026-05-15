@@ -2,12 +2,13 @@ package telnet
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
 	"time"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 )
 
 // Telnet protocol constants
@@ -59,7 +60,22 @@ func (c *Client) Connect(ctx context.Context, cfg protocol.ConnConfig) error {
 		c.setError(fmt.Errorf("dial: %w", err))
 		return err
 	}
-	c.conn = conn
+
+	if cfg.UseTLS {
+		tlsCfg := &tls.Config{
+			ServerName:         cfg.Host,
+			InsecureSkipVerify: cfg.TLSSkipVerify,
+		}
+		tlsConn := tls.Client(conn, tlsCfg)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			conn.Close()
+			c.setError(fmt.Errorf("tls handshake: %w", err))
+			return err
+		}
+		c.conn = tlsConn
+	} else {
+		c.conn = conn
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
@@ -197,20 +213,36 @@ func (c *Client) readLoop(ctx context.Context) {
 						i += 3
 
 					case next == SB:
-						// Subnegotiation: IAC SB ... IAC SE
-						// Find the terminating IAC SE
-						found := false
-						for j := i + 2; j < len(raw)-1; j++ {
-							if raw[j] == IAC && raw[j+1] == SE {
-								i = j + 2 // skip past IAC SE
-								found = true
-								break
+						// Subnegotiation: IAC SB <opt> <data> IAC SE
+						if i+2 < len(raw) {
+							subOpt := raw[i+2]
+							if subOpt == OPT_TERMINAL_TYPE && i+3 < len(raw) && raw[i+3] == 1 {
+								// Server sent: IAC SB TERMINAL-TYPE SEND IAC SE
+								// Reply: IAC SB TERMINAL-TYPE IS <term> IAC SE
+								foundSE := false
+								for j := i + 4; j < len(raw)-1; j++ {
+									if raw[j] == IAC && raw[j+1] == SE {
+										i = j + 2
+										foundSE = true
+										break
+									}
+								}
+								if !foundSE { leftover = append(leftover, raw[i:]...); i = len(raw); break }
+								termType := c.cfg.TermType
+								if termType == "" { termType = "xterm-256color" }
+								reply := append([]byte{IAC, SB, OPT_TERMINAL_TYPE, 0}, termType...)
+								reply = append(reply, IAC, SE)
+								if c.conn != nil { c.conn.Write(reply) }
+							} else {
+								// Skip other subnegotiations
+								found := false
+								for j := i + 2; j < len(raw)-1; j++ {
+									if raw[j] == IAC && raw[j+1] == SE {
+										i = j + 2; found = true; break
+									}
+								}
+								if !found { leftover = append(leftover, raw[i:]...); i = len(raw) }
 							}
-						}
-						if !found {
-							// IAC SE not found, save from IAC onward as leftover
-							leftover = append(leftover, raw[i:]...)
-							i = len(raw) // exit loop
 						}
 
 					default:
@@ -234,9 +266,29 @@ func (c *Client) readLoop(ctx context.Context) {
 }
 
 func (c *Client) handleNegotiation(cmd, opt byte) {
-	// Silently ignore ALL negotiations. Many embedded devices (Huawei, Cisco, etc.)
-	// have broken Telnet implementations that echo negotiation bytes as commands.
-	// By never responding, we force raw TCP mode which works on all devices.
+	// Only handle terminal type negotiation — critical for color output on network gear.
+	// Ignore everything else to avoid issues with broken Telnet implementations.
+	if opt == OPT_TERMINAL_TYPE {
+		if cmd == DO {
+			c.writeCmd(WILL, OPT_TERMINAL_TYPE)
+		} else if cmd == SB {
+			// Server wants us to send our terminal type
+			termType := c.cfg.TermType
+			if termType == "" { termType = "xterm-256color" }
+			// IAC SB TERMINAL-TYPE IS <type> IAC SE
+			if c.conn != nil {
+				c.conn.Write([]byte{IAC, SB, OPT_TERMINAL_TYPE, 0}) // 0 = IS
+				c.conn.Write([]byte(termType))
+				c.conn.Write([]byte{IAC, SE})
+			}
+		}
+	}
+}
+
+func (c *Client) writeCmd(cmd, opt byte) {
+	if c.conn != nil {
+		c.conn.Write([]byte{IAC, cmd, opt})
+	}
 }
 
 func (c *Client) setState(s protocol.ConnState) {

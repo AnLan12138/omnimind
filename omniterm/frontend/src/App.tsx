@@ -17,6 +17,12 @@ import { useConfigStore, getScaleSize } from './stores/configStore'
 import { useExtensionStore } from './stores/extensionStore'
 import MacroPanel from './components/MacroPanel'
 import FilePanel from './components/FilePanel'
+import TunnelPanel from './components/TunnelPanel'
+import MonitorPanel from './components/MonitorPanel'
+import logoImg from './assets/images/logo-universal.png'
+import { useI18n } from './lib/i18n'
+import { registerShortcutAction, handleShortcutEvent, useShortcutStore } from './stores/shortcutStore'
+import { useSplitStore } from './stores/splitStore'
 
 function genId() { return crypto.randomUUID?.() ?? Math.random().toString(36).slice(2, 10) }
 
@@ -29,12 +35,23 @@ export default function App() {
   const [activeView, setActiveView] = useState('sessions')
   const broadcastActive = useBroadcastStore(s => s.active)
   const broadcastIncluded = useBroadcastStore(s => s.included)
+  const splitActive = useSplitStore(s => s.active)
+  const toggleSplit = useSplitStore(s => s.toggle)
   const [panelVisible, setPanelVisible] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [sidebarSearch, setSidebarSearch] = useState('')
+  const [toastMsg, setToastMsg] = useState('')
+  const [toastType, setToastType] = useState<'error' | 'success' | 'info'>('info')
 
   const uiScale = useConfigStore(s => s.uiScale)
+  const { t } = useI18n()
+
+  const doToast = (msg: string, type: 'error' | 'success' | 'info' = 'info') => {
+    setToastType(type)
+    setToastMsg(msg)
+    setTimeout(() => setToastMsg(''), 5000)
+  }
 
   // Apply UI font scale to document root (everything inherits via rem)
   useEffect(() => {
@@ -44,13 +61,50 @@ export default function App() {
   useEffect(() => { loadSessions() }, [])
 
   useEffect(() => {
+    registerShortcutAction('newSession', e => { e.preventDefault(); setEditingSession(null); setDialogOpen(true); return true })
+    registerShortcutAction('closeTab', e => {
+      e.preventDefault()
+      const t = useTabStore.getState().tabs.find(t => t.active)
+      if (t) { window.go.main.App.Disconnect(t.connId).catch(() => {}); useTabStore.getState().removeTab(t.id) }
+      return true
+    })
+    registerShortcutAction('nextTab', e => {
+      e.preventDefault()
+      const s = useTabStore.getState()
+      const i = s.tabs.findIndex(t => t.id === s.activeTabId)
+      const n = (i + 1) % s.tabs.length
+      if (s.tabs[n]) s.setActive(s.tabs[n].id)
+      return true
+    })
+    registerShortcutAction('prevTab', e => {
+      e.preventDefault()
+      const s = useTabStore.getState()
+      const i = s.tabs.findIndex(t => t.id === s.activeTabId)
+      const n = (i - 1 + s.tabs.length) % s.tabs.length
+      if (s.tabs[n]) s.setActive(s.tabs[n].id)
+      return true
+    })
+    registerShortcutAction('toggleSidebar', e => { e.preventDefault(); setActiveView(a => a === 'sessions' ? 'terminal' : 'sessions'); return true })
+    registerShortcutAction('settings', e => { e.preventDefault(); setSettingsOpen(true); return true })
+  }, [])
+
+  useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      const ctrl = e.ctrlKey || e.metaKey
-      if (ctrl && e.key === 'w') { e.preventDefault(); const t = useTabStore.getState().tabs.find(t => t.active); if (t) { window.go.main.App.Disconnect(t.connId).catch(() => {}); useTabStore.getState().removeTab(t.id) } }
-      if (ctrl && e.key === 'Tab') { e.preventDefault(); const s = useTabStore.getState(); const i = s.tabs.findIndex(t => t.id === s.activeTabId); const n = e.shiftKey ? (i - 1 + s.tabs.length) % s.tabs.length : (i + 1) % s.tabs.length; if (s.tabs[n]) s.setActive(s.tabs[n].id) }
-      if (ctrl && e.key === 'n') { e.preventDefault(); setEditingSession(null); setDialogOpen(true) }
-      if (ctrl && e.shiftKey && e.key === 'E') { e.preventDefault(); setActiveView(a => a === 'sessions' ? 'terminal' : 'sessions') }
-      if (ctrl && e.key === ',') { e.preventDefault(); setSettingsOpen(true) }
+      const shortcuts = useShortcutStore.getState().shortcuts
+      handleShortcutEvent(e, shortcuts)
+    }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [])
+
+  // Auto-close active error tab on any keypress
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const activeTab = useTabStore.getState().tabs.find(t => t.active && t.state === 'error')
+      if (activeTab) {
+        window.go.main.App.Disconnect(activeTab.connId).catch(() => {})
+        useTabStore.getState().removeTab(activeTab.id)
+      }
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
@@ -63,13 +117,17 @@ export default function App() {
   const doConnect = useCallback(async (sess: any) => {
     const connId = genId()
     const title = `${sess.username ? sess.username + '@' : ''}${sess.host}:${sess.port}`
-    addTab({ id: genId(), title, protocol: sess.protocol || 'ssh', connId, active: true, state: 'connecting' })
+    addTab({ id: genId(), title, protocol: sess.protocol || 'ssh', connId, active: true, state: 'connecting', sessionSnapshot: sess })
     try { await Connect(connId, sess) } catch (err: any) {
       console.error('Connect failed:', err)
-      alert('Connection failed: ' + (err?.message || err || 'Unknown error'))
+      doToast('连接失败: ' + (err?.message || err || '未知错误'), 'error')
       useTabStore.getState().updateTabState(connId, 'error')
     }
   }, [addTab])
+
+  const handleCloneTab = useCallback((tab: any) => {
+    if (tab.sessionSnapshot) doConnect(tab.sessionSnapshot)
+  }, [doConnect])
 
   const handleDoubleClick = useCallback(async (sess: Session) => {
     doConnect(sess)
@@ -86,7 +144,7 @@ export default function App() {
     const path = store.getPath('text-editor')
     if (path) {
       const args = store.getArgs('text-editor')
-      LaunchProgram(path, args).catch(() => alert('Failed to launch editor'))
+      LaunchProgram(path, args).catch(() => doToast('启动编辑器失败', 'error'))
     } else {
       setSettingsTab('extensions')
       setSettingsOpen(true)
@@ -106,17 +164,28 @@ export default function App() {
           activeView={activeView}
           sidebarVisible={activeView === 'sessions'}
           broadcastActive={broadcastActive}
+          splitActive={splitActive}
           onToggleBroadcast={() => {
             const store = useBroadcastStore.getState()
-            if (store.active) store.stop()
-            else store.start(tabs.filter(t => t.state === 'connected').map(t => t.connId))
+            if (store.active) { store.stop(); return }
+            if (tabs.filter(t => t.state === 'connected').length < 2) {
+              doToast(t('needMoreDevices'))
+              return
+            }
+            store.start(tabs.filter(t => t.state === 'connected').map(t => t.connId))
           }}
           onViewChange={v => {
             if (v === 'new') { setEditingSession(null); setDialogOpen(true) }
             else if (v === 'sessions') { setActiveView(activeView === 'sessions' ? 'terminal' : 'sessions') }
             else if (v === 'terminal') { setActiveView('terminal') }
             else if (v === 'settings') { setSettingsOpen(true); setActiveView('sessions') }
-            else { setActiveView(activeView === v ? 'terminal' : v) }
+            else if (v === 'split') {
+              if (!splitActive && tabs.filter(t => t.state === 'connected').length < 2) {
+                doToast(t('needMoreDevices'))
+              } else {
+                toggleSplit()
+              }
+            } else { setActiveView(activeView === v ? 'terminal' : v) }
           }}
           onOpenEditor={handleOpenEditor} />
 
@@ -154,22 +223,28 @@ export default function App() {
               ) : (
                 <div className="flex items-center justify-center h-full text-[11px] text-vscode-text-dim p-3 text-center">没有活动连接</div>
               ))}
-              {activeView === 'split' && (
+              {splitActive && (
                 <div className="p-3 text-[11px] text-vscode-text-dim">连接多台设备后使用分屏视图</div>
+              )}
+              {activeView === 'tunnel' && (
+                <TunnelPanel searchTerm={sidebarSearch} onClose={() => setActiveView('terminal')} />
+              )}
+              {activeView === 'monitor' && (
+                <MonitorPanel onClose={() => setActiveView('terminal')} />
               )}
             </div>
           </div>
         )}
 
         <div className="flex flex-col flex-1 min-w-0">
-          <TabBar />
+          <TabBar onCloneTab={handleCloneTab} />
 
           <div className="flex-1 min-h-0">
             {tabs.length === 0 ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center space-y-3">
-                  <div className="text-5xl opacity-30">🖥</div>
-                  <h2 className="text-base text-vscode-text-light">OmniTerm</h2>
+                  <img src={logoImg} alt="OmniMind" className="w-24 h-24 mx-auto opacity-90" />
+                  <h2 className="text-xl font-semibold text-white">OmniMind</h2>
                   <p className="text-xs text-vscode-text-dim max-w-xs">Multi-protocol remote client — SSH, Telnet, RDP, VNC, FTP, Serial</p>
                   <div className="flex gap-5 justify-center mt-3">
                     {[{ k: 'Ctrl+N', l: 'New Session' }, { k: 'Ctrl+Shift+E', l: 'Toggle Sidebar' }, { k: 'Ctrl+,', l: 'Settings' }].map(s => (
@@ -206,7 +281,7 @@ export default function App() {
                   </div>
                 ))}
               </div>
-            ) : activeView === 'split' ? (
+            ) : splitActive ? (
               /* Split grid: 2 columns, all tabs */
               <div className="h-full overflow-auto p-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.min(tabs.length, 2)}, 1fr)`, gridAutoRows: `1fr` }}>
                 {tabs.map(tab => (
@@ -240,6 +315,17 @@ export default function App() {
 
       {dialogOpen && <SessionDialog session={editingSession} groupId={defaultGroupId} onClose={() => setDialogOpen(false)} onSaved={loadSessions} onConnect={doConnect} />}
       {settingsOpen && <SettingsDialog onClose={() => { setSettingsOpen(false); setSettingsTab(undefined) }} initialTab={settingsTab} />}
+      {toastMsg && (
+        <div className="fixed top-4 right-4 z-50 pointer-events-none" style={{ animation: 'toastIn 0.25s ease-out' }}>
+          <div className={`w-80 px-4 py-2 rounded-lg text-[13px] text-white shadow-lg ${
+            toastType === 'error' ? 'bg-red-600/90' :
+            toastType === 'success' ? 'bg-green-600/90' :
+            'bg-vscode-accent/90'
+          }`}>
+            {toastMsg}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

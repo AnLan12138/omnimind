@@ -14,17 +14,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"omniterm/internal/config"
-	"omniterm/internal/filetransfer"
-	"omniterm/internal/protocol"
-	"omniterm/internal/protocol/serial"
-	ftpclient "omniterm/internal/protocol/ftp"
-	sshclient "omniterm/internal/protocol/ssh"
-	telnetclient "omniterm/internal/protocol/telnet"
-	rdpclient "omniterm/internal/protocol/rdp"
-	moshclient "omniterm/internal/protocol/mosh"
-	vncclient "omniterm/internal/protocol/vnc"
-	"omniterm/internal/session"
+	"omnimind/internal/config"
+	"omnimind/internal/filetransfer"
+	"omnimind/internal/protocol"
+	"omnimind/internal/protocol/serial"
+	ftpclient "omnimind/internal/protocol/ftp"
+	sshclient "omnimind/internal/protocol/ssh"
+	telnetclient "omnimind/internal/protocol/telnet"
+	rdpclient "omnimind/internal/protocol/rdp"
+	moshclient "omnimind/internal/protocol/mosh"
+	vncclient "omnimind/internal/protocol/vnc"
+	"omnimind/internal/session"
+	ghsync "omnimind/internal/sync"
 )
 
 type ActiveConn struct {
@@ -171,7 +172,7 @@ func (a *App) GenerateSSHKey(keyPath string, comment string) (string, error) {
 	if keyPath == "" {
 		home, _ := config.DataDir()
 		home, _ = config.HomeDir()
-		keyPath = home + "/.ssh/id_ed25519_omniterm"
+		keyPath = home + "/.ssh/id_ed25519_omnimind"
 	}
 	pubKey, err := session.GenerateKeyPair(keyPath, comment)
 	if err != nil { return "", err }
@@ -339,11 +340,15 @@ func (a *App) sessionToConfig(sess session.Session) protocol.ConnConfig {
 		ProxyJump:      sess.ProxyJump,
 		KeepAliveSec:   sess.KeepAliveSec,
 		TelnetTermType: sess.TelnetTermType,
+		UseTLS:        sess.UseTLS,
+		TLSSkipVerify: sess.TLSSkipVerify,
+		UseFTPS:       sess.UseFTPS,
 		BaudRate:       sess.BaudRate,
 		DataBits:       sess.DataBits,
 		StopBits:       sess.StopBits,
 		Parity:         sess.Parity,
 		FlowControl:    sess.FlowControl,
+		TermType:       sess.TermType,
 		Rows:           24,
 		Cols:           80,
 	}
@@ -791,6 +796,44 @@ func (a *App) PickExecutable() (string, error) {
 	return path, nil
 }
 
+// --- SSH Tunnels ---
+
+func (a *App) StartSSHTunnel(connID string, id string, ttype int, localAddr string, remoteAddr string) error {
+	ac := a.getConn(connID)
+	if ac == nil {
+		return fmt.Errorf("connection %s not found", connID)
+	}
+	sshCli, ok := ac.Client.(*sshclient.Client)
+	if !ok {
+		return fmt.Errorf("connection %s is not SSH", connID)
+	}
+	switch ttype {
+	case 0:
+		_, err := sshCli.StartLocalForward(id, localAddr, remoteAddr)
+		return err
+	case 1:
+		_, err := sshCli.StartRemoteForward(id, remoteAddr, localAddr)
+		return err
+	case 2:
+		_, err := sshCli.StartDynamicForward(id, localAddr)
+		return err
+	default:
+		return fmt.Errorf("unknown tunnel type: %d", ttype)
+	}
+}
+
+func (a *App) StopSSHTunnel(connID string, id string) error {
+	ac := a.getConn(connID)
+	if ac == nil {
+		return fmt.Errorf("connection %s not found", connID)
+	}
+	sshCli, ok := ac.Client.(*sshclient.Client)
+	if !ok {
+		return fmt.Errorf("connection %s is not SSH", connID)
+	}
+	return sshCli.StopTunnel(id)
+}
+
 // --- Utility ---
 
 func (a *App) ListSerialPorts() ([]string, error) {
@@ -799,4 +842,31 @@ func (a *App) ListSerialPorts() ([]string, error) {
 
 func (a *App) Greet(name string) string {
 	return fmt.Sprintf("Hello %s, It's show time!", name)
+}
+
+// --- GitHub Sync ---
+
+func (a *App) SyncPush(token string, gistID string, sessionsJSON string, foldersJSON string, macrosJSON string, settingsJSON string, devicesJSON string) (string, error) {
+	data := &ghsync.SyncData{
+		Sessions: sessionsJSON,
+		Folders:  foldersJSON,
+		Macros:   macrosJSON,
+		Settings: settingsJSON,
+		Devices:  devicesJSON,
+	}
+	return ghsync.PushToGist(token, gistID, data)
+}
+
+func (a *App) SyncPull(token string, gistID string) (map[string]string, error) {
+	data, err := ghsync.PullFromGist(token, gistID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		"sessions": data.Sessions,
+		"folders":  data.Folders,
+		"macros":   data.Macros,
+		"settings": data.Settings,
+		"devices":  data.Devices,
+	}, nil
 }

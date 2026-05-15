@@ -34,3 +34,13 @@ html, body, #root {
 
 /* Input placeholder color */
 ::placeholder { color: #6a6a6a; }
+
+/* Toast animation */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes toastOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}

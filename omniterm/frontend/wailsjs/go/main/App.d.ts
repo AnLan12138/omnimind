@@ -105,7 +105,15 @@ export function SetMasterPassword(arg1:string):Promise<void>;
 
 export function StartRecording(arg1:string,arg2:string,arg3:number,arg4:number):Promise<void>;
 
+export function StartSSHTunnel(arg1:string,arg2:string,arg3:number,arg4:string,arg5:string):Promise<void>;
+
 export function StopRecording(arg1:string):Promise<void>;
+
+export function StopSSHTunnel(arg1:string,arg2:string):Promise<void>;
+
+export function SyncPull(arg1:string,arg2:string):Promise<Record<string, string>>;
+
+export function SyncPush(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string):Promise<string>;
 
 export function Unlock(arg1:string):Promise<boolean>;
 

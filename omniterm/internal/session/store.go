@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/pbkdf2"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 )
 
 type Session struct {
@@ -32,6 +32,10 @@ type Session struct {
 	ProxyJump        string           `json:"proxyJump,omitempty"`
 	KeepAliveSec     int              `json:"keepAliveSec,omitempty"`
 	TelnetTermType   string           `json:"telnetTermType,omitempty"`
+	TermType         string           `json:"termType,omitempty"` // xterm-256color, vt100, etc.
+	UseTLS           bool             `json:"useTLS,omitempty"`
+	TLSSkipVerify    bool             `json:"tlsSkipVerify,omitempty"`
+	UseFTPS          string           `json:"useFTPS,omitempty"`
 	BaudRate         int              `json:"baudRate,omitempty"`
 	DataBits         int              `json:"dataBits,omitempty"`
 	StopBits         float64          `json:"stopBits,omitempty"`
@@ -64,7 +68,7 @@ func NewStore(dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	dbPath := filepath.Join(dataDir, "omniterm.db")
+	dbPath := filepath.Join(dataDir, "omnimind.db")
 	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -85,7 +89,7 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) SetMasterPassword(password string) {
-	s.masterKey = pbkdf2.Key([]byte(password), []byte("omniterm-salt-2024"), 600000, 32, sha256.New)
+	s.masterKey = pbkdf2.Key([]byte(password), []byte("omnimind-salt-2024"), 600000, 32, sha256.New)
 }
 
 func (s *Store) ListSessions() ([]Session, error) {
@@ -94,7 +98,7 @@ func (s *Store) ListSessions() ([]Session, error) {
 
 	rows, err := s.db.Query(`SELECT id, name, protocol, host, port, username,
 		encrypted_password, private_key_path, use_agent, proxy_jump, keepalive_sec,
-		telnet_term_type, baud_rate, data_bits, stop_bits, parity, flow_control,
+		telnet_term_type, term_type, use_tls, tls_skip_verify, use_ftps, baud_rate, data_bits, stop_bits, parity, flow_control,
 		folder_id, sort_order, color_label, notes, created_at, updated_at
 		FROM sessions ORDER BY sort_order, name`)
 	if err != nil {
@@ -108,7 +112,7 @@ func (s *Store) ListSessions() ([]Session, error) {
 		var encPwd sql.NullString
 		err := rows.Scan(&sess.ID, &sess.Name, &sess.Protocol, &sess.Host, &sess.Port, &sess.Username,
 			&encPwd, &sess.PrivateKeyPath, &sess.UseAgent, &sess.ProxyJump, &sess.KeepAliveSec,
-			&sess.TelnetTermType, &sess.BaudRate, &sess.DataBits, &sess.StopBits, &sess.Parity, &sess.FlowControl,
+			&sess.TelnetTermType, &sess.TermType, &sess.UseTLS, &sess.TLSSkipVerify, &sess.UseFTPS, &sess.BaudRate, &sess.DataBits, &sess.StopBits, &sess.Parity, &sess.FlowControl,
 			&sess.FolderID, &sess.SortOrder, &sess.ColorLabel, &sess.Notes, &sess.CreatedAt, &sess.UpdatedAt)
 		if err != nil {
 			return nil, err
@@ -133,12 +137,12 @@ func (s *Store) SaveSession(sess *Session) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO sessions
 		(id, name, protocol, host, port, username, encrypted_password,
 		 private_key_path, use_agent, proxy_jump, keepalive_sec,
-		 telnet_term_type, baud_rate, data_bits, stop_bits, parity, flow_control,
+		 telnet_term_type, term_type, use_tls, tls_skip_verify, use_ftps, baud_rate, data_bits, stop_bits, parity, flow_control,
 		 folder_id, sort_order, color_label, notes, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		sess.ID, sess.Name, sess.Protocol, sess.Host, sess.Port, sess.Username, encPwd,
 		sess.PrivateKeyPath, sess.UseAgent, sess.ProxyJump, sess.KeepAliveSec,
-		sess.TelnetTermType, sess.BaudRate, sess.DataBits, sess.StopBits, sess.Parity, sess.FlowControl,
+		sess.TelnetTermType, sess.TermType, sess.UseTLS, sess.TLSSkipVerify, sess.UseFTPS, sess.BaudRate, sess.DataBits, sess.StopBits, sess.Parity, sess.FlowControl,
 		sess.FolderID, sess.SortOrder, sess.ColorLabel, sess.Notes)
 	return err
 }
@@ -270,7 +274,15 @@ func (s *Store) migrate() error {
 			sort_order INTEGER DEFAULT 0
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Add new columns for TLS/FTPS (ignore errors if already exist)
+s.db.Exec(`ALTER TABLE sessions ADD COLUMN term_type TEXT DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE sessions ADD COLUMN use_tls INTEGER DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE sessions ADD COLUMN tls_skip_verify INTEGER DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE sessions ADD COLUMN use_ftps TEXT DEFAULT ''`)
+	return nil
 }
 
 func (s *Store) encryptPassword(plaintext string) string {

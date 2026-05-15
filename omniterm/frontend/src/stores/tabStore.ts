@@ -7,6 +7,7 @@ export interface Tab {
   connId: string
   active: boolean
   state: string // disconnected | connecting | connected | reconnecting | error
+  sessionSnapshot?: any // for clone support
 }
 
 interface TabStore {
@@ -18,6 +19,7 @@ interface TabStore {
   updateTabState: (connId: string, state: string) => void
   updateTabTitle: (connId: string, title: string) => void
   getActiveTab: () => Tab | undefined
+  reorderTabs: (fromIdx: number, toIdx: number) => void
 }
 
 export const useTabStore = create<TabStore>((set, get) => ({
@@ -64,4 +66,12 @@ export const useTabStore = create<TabStore>((set, get) => ({
     })),
 
   getActiveTab: () => get().tabs.find((t) => t.active),
+
+  reorderTabs: (fromIdx, toIdx) =>
+    set((state) => {
+      const tabs = [...state.tabs]
+      const [moved] = tabs.splice(fromIdx, 1)
+      tabs.splice(toIdx, 0, moved)
+      return { tabs }
+    }),
 }))

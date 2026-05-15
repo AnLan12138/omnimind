@@ -145,6 +145,9 @@ export const t: TranslationMap = {
   parity: { en: 'Parity', zh: '校验' },
   flowControl: { en: 'Flow', zh: '流控' },
   saving: { en: 'Saving...', zh: '保存中...' },
+  needMoreDevices: { en: 'Need at least 2 connected devices', zh: '需要至少 2 台已连接设备' },
+  tunnels: { en: 'Tunnels', zh: '隧道' },
+  multiexec: { en: 'MultiExec', zh: '多路广播' },
 }
 
 interface I18nContextType {

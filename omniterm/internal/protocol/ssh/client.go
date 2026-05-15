@@ -15,7 +15,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 )
 
 type Client struct {
@@ -32,6 +32,9 @@ type Client struct {
 	cancel    context.CancelFunc
 	latencyNs int64 // atomic, last measured RTT in nanoseconds
 
+	tunnels map[string]*Tunnel
+	mu      sync.RWMutex
+
 	onData          protocol.DataCallback
 	onState         protocol.StateCallback
 	onError         protocol.ErrorCallback
@@ -44,6 +47,7 @@ func New() *Client {
 	return &Client{
 		state:           protocol.StateDisconnected,
 		interactivePipe: make(chan string, 10),
+		tunnels:         make(map[string]*Tunnel),
 	}
 }
 
@@ -132,7 +136,9 @@ func (c *Client) Connect(ctx context.Context, cfg protocol.ConnConfig) error {
 		cols = 80
 	}
 
-	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
+	termType := cfg.TermType
+	if termType == "" { termType = "xterm-256color" }
+	if err := session.RequestPty(termType, rows, cols, modes); err != nil {
 		session.Close()
 		c.conn.Close()
 		c.setError(fmt.Errorf("request pty: %w", err))

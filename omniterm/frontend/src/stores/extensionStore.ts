@@ -14,7 +14,7 @@ const defaults: ExtensionDef[] = [
 
 function load(): ExtensionDef[] {
   try {
-    const raw = localStorage.getItem('omniterm-extensions')
+    const raw = localStorage.getItem('omnimind-extensions')
     if (raw) {
       const saved: Partial<ExtensionDef>[] = JSON.parse(raw)
       // Merge with defaults so new fields always have values
@@ -28,7 +28,7 @@ function load(): ExtensionDef[] {
 }
 
 function save(exts: ExtensionDef[]) {
-  localStorage.setItem('omniterm-extensions', JSON.stringify(exts))
+  localStorage.setItem('omnimind-extensions', JSON.stringify(exts))
 }
 
 interface ExtensionStore {

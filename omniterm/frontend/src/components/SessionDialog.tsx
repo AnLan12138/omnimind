@@ -43,6 +43,7 @@ export default function SessionDialog({ session: editSession, groupId = 'default
   const [useAgent, setUseAgent] = useState(false)
   const [proxyJump, setProxyJump] = useState('')
   const [keepAliveSec, setKeepAliveSec] = useState(30)
+  const [termType, setTermType] = useState('xterm-256color')
   // Telnet
   const [telnetTermType, setTelnetTermType] = useState('XTERM-256COLOR')
   // Serial
@@ -51,6 +52,9 @@ export default function SessionDialog({ session: editSession, groupId = 'default
   const [stopBits, setStopBits] = useState(1.0)
   const [parity, setParity] = useState('none')
   const [flowControl, setFlowControl] = useState('none')
+  const [useTLS, setUseTLS] = useState(false)
+  const [tlsSkipVerify, setTlsSkipVerify] = useState(false)
+  const [useFTPS, setUseFTPS] = useState('')
   // General
   const [folderId, setFolderId] = useState('')
   const [notes, setNotes] = useState('')
@@ -99,7 +103,7 @@ export default function SessionDialog({ session: editSession, groupId = 'default
       const s = session.Session.createFrom({
         id: editSession?.id || genId(), name: sessionName, protocol, host: host.trim(),
         port: parseInt(port) || 22, username: username.trim(), password, privateKeyPath, useAgent,
-        proxyJump, keepAliveSec, telnetTermType, baudRate, dataBits, stopBits, parity, flowControl,
+        proxyJump, keepAliveSec, telnetTermType, baudRate, dataBits, stopBits, parity, flowControl, useTLS, tlsSkipVerify, useFTPS, termType,
         folderId, notes, sortOrder: editSession?.sortOrder || 0,
         createdAt: editSession?.createdAt || now(), updatedAt: now(),
       })
@@ -108,7 +112,7 @@ export default function SessionDialog({ session: editSession, groupId = 'default
         username: s.username || '', password: s.password || '', privateKeyPath: s.privateKeyPath || '',
         useAgent: s.useAgent || false, proxyJump: s.proxyJump || '', keepAliveSec: s.keepAliveSec || 30,
         telnetTermType: s.telnetTermType || '', baudRate: s.baudRate || 115200, dataBits: s.dataBits || 8,
-        stopBits: s.stopBits || 1.0, parity: s.parity || 'none', flowControl: s.flowControl || 'none',
+        stopBits: s.stopBits || 1.0, parity: s.parity || 'none', flowControl: s.flowControl || 'none', useTLS: useTLS || false, tlsSkipVerify: tlsSkipVerify || false, useFTPS: useFTPS || '', termType: termType || 'xterm-256color',
         folderId: s.folderId || '', sortOrder: s.sortOrder || 0, createdAt: s.createdAt, updatedAt: s.updatedAt,
       })
       // Also save to sidebar device list
@@ -121,7 +125,7 @@ export default function SessionDialog({ session: editSession, groupId = 'default
       } catch {}
       // Connect immediately after saving
       if (onConnect) {
-        onConnect({ id: s.id, name: sessionName, protocol, host: host.trim(), port: parseInt(port) || 22, username: username.trim(), password, privateKeyPath, useAgent, proxyJump, keepAliveSec: keepAliveSec || 30 })
+        onConnect({ id: s.id, name: sessionName, protocol, host: host.trim(), port: parseInt(port) || 22, username: username.trim(), password, privateKeyPath, useAgent, proxyJump, keepAliveSec: keepAliveSec || 30, termType: termType || 'xterm-256color' })
       }
       onSaved(); onClose()
     } catch (err) { console.error('Save failed:', err) }
@@ -141,12 +145,12 @@ export default function SessionDialog({ session: editSession, groupId = 'default
     </div>
   )
 
-  const select = (label: string, value: any, set: (v: any) => void, options: any[]) => (
+  const select = (label: string, value: any, set: (v: any) => void, options: any[], labelOptions?: string[]) => (
     <div>
       <label className="block text-[13px] text-vscode-text mb-1">{label}</label>
       <select value={value} onChange={e => set(e.target.value)}
         className="w-full px-2.5 h-8 bg-vscode-input border border-vscode-border rounded text-[13px] text-vscode-text focus:outline-none focus:border-vscode-accent">
-        {options.map(o => <option key={String(o)} value={o}>{o}</option>)}
+        {options.map((o, i) => <option key={String(o)} value={labelOptions ? labelOptions[i] || o : o}>{labelOptions ? labelOptions[i] || o : o}</option>)}
       </select>
     </div>
   )
@@ -209,6 +213,7 @@ export default function SessionDialog({ session: editSession, groupId = 'default
                     className="w-16 px-2.5 h-8 bg-vscode-input border border-vscode-border rounded text-[13px] text-vscode-text focus:outline-none focus:border-vscode-accent" />
                 </div>
               </div>
+              {select('终端类型 (TERM)', termType, setTermType, ['xterm-256color', 'xterm', 'xterm-color', 'vt220', 'vt100', 'ansi', 'linux'], ['xterm-256color (Linux 推荐)', 'xterm (通用)', 'xterm-color (彩色)', 'vt220 (旧设备)', 'vt100 (最小)', 'ansi (基础)', 'linux (控制台)'])}
             </div>
           )}
 
@@ -217,6 +222,30 @@ export default function SessionDialog({ session: editSession, groupId = 'default
             <div className="space-y-3 pt-2 border-t border-vscode-border">
               <div className="text-[12px] text-vscode-text-muted uppercase tracking-wider">{t('telnetOptions')}</div>
               {select(t('terminalType'), telnetTermType, setTelnetTermType, ['XTERM-256COLOR', 'XTERM', 'VT220', 'VT100', 'ANSI', 'IBM-3278-2'])}
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={useTLS} onChange={e => setUseTLS(e.target.checked)} className="accent-vscode-accent" />
+                <span className="text-[13px] text-vscode-text">TLS/SSL (Telnets)</span>
+              </label>
+              {useTLS && (
+                <label className="flex items-center gap-2 cursor-pointer ml-4">
+                  <input type="checkbox" checked={tlsSkipVerify} onChange={e => setTlsSkipVerify(e.target.checked)} className="accent-vscode-accent" />
+                  <span className="text-[12px] text-vscode-text-dim">跳过证书验证</span>
+                </label>
+              )}
+            </div>
+          )}
+
+          {/* FTP / FTPS options */}
+          {protocol === 'ftp' && (
+            <div className="space-y-2 pt-2 border-t border-vscode-border">
+              <div className="text-[12px] text-vscode-text-muted uppercase tracking-wider">FTPS</div>
+              {select('加密模式', useFTPS, setUseFTPS, ['', 'explicit', 'implicit'], ['无', '显式 (AUTH TLS)', '隐式 (TLS 直连)'])}
+              {useFTPS && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={tlsSkipVerify} onChange={e => setTlsSkipVerify(e.target.checked)} className="accent-vscode-accent" />
+                  <span className="text-[12px] text-vscode-text-dim">跳过证书验证</span>
+                </label>
+              )}
             </div>
           )}
 

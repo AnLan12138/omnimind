@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	updateURL     = "https://api.github.com/repos/omniterm/omniterm/releases/latest"
+	updateURL     = "https://api.github.com/repos/omnimind/omnimind/releases/latest"
 	updateTimeout = 15 * time.Second
 )
 
@@ -47,7 +47,7 @@ func (u *UpdateChecker) CheckForUpdate() (*ReleaseInfo, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", "OmniTerm-UpdateChecker/1.0")
+	req.Header.Set("User-Agent", "OmniMind-UpdateChecker/1.0")
 
 	resp, err := u.HTTPClient.Do(req)
 	if err != nil {

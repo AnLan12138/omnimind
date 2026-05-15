@@ -1,34 +1,14 @@
 import { useState, useEffect } from 'react'
-import { X, Monitor, Keyboard, Palette, Shield, Info, Check, Download, Loader2, Puzzle, FolderOpen } from 'lucide-react'
+import { X, Monitor, Keyboard, Palette, Shield, Info, Check, Download, Loader2, Puzzle, FolderOpen, Cloud, CloudUpload, CloudDownload } from 'lucide-react'
 import { useThemeStore, THEMES } from '../stores/themeStore'
 import { useConfigStore, type AppSettings } from '../stores/configStore'
 import { useExtensionStore } from '../stores/extensionStore'
 import { useI18n } from '../lib/i18n'
 import { CheckForUpdate, InstallUpdate, PickExecutable } from '../../wailsjs/go/main/App'
+import { useShortcutStore } from '../stores/shortcutStore'
+import logoImg from '../assets/images/logo-universal.png'
 
 interface Props { onClose: () => void; initialTab?: string }
-
-const shortcutList = [
-  { keys: 'Ctrl+Shift+C', dk: 'copy' },
-  { keys: 'Ctrl+Shift+V', dk: 'paste' },
-  { keys: 'Ctrl+Shift+K', dk: 'clearBuffer' },
-  { keys: 'Ctrl+Shift+S', dk: 'saveTerminal' },
-  { keys: 'Ctrl+Shift+F', dk: 'find' },
-  { keys: 'Ctrl+T', dk: 'newTab' },
-  { keys: 'Ctrl+N', dk: 'newSession' },
-  { keys: 'Ctrl+W', dk: 'closeTab' },
-  { keys: 'Ctrl+Tab', dk: 'nextTab' },
-  { keys: 'Ctrl+Shift+Tab', dk: 'prevTab' },
-  { keys: 'Ctrl+Shift+E', dk: 'toggleSidebar' },
-  { keys: 'Ctrl+Shift+O', dk: 'splitHorizontal' },
-  { keys: 'Ctrl+\'', dk: 'splitVertical' },
-  { keys: 'Ctrl+=', dk: 'zoomIn' },
-  { keys: 'Ctrl+-', dk: 'zoomOut' },
-  { keys: 'Ctrl+0', dk: 'resetZoom' },
-  { keys: 'Ctrl+MouseWheel', dk: 'zoomFont' },
-  { keys: 'Ctrl+,', dk: 'settings' },
-  { keys: 'F11', dk: 'toggleFullscreen' },
-]
 
 export default function SettingsDialog({ onClose, initialTab }: Props) {
   const [active, setActive] = useState(initialTab || 'appearance')
@@ -39,6 +19,13 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
   const [updateInfo, setUpdateInfo] = useState<any>(null)
   const [updateState, setUpdateState] = useState<'idle'|'checking'|'available'|'installing'|'done'|'error'>('idle')
   const [updateErr, setUpdateErr] = useState('')
+
+  // Esc to close
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
 
   useEffect(() => {
     if (active !== 'about' || updateState !== 'idle') return
@@ -54,6 +41,7 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
     { id: 'extensions', icon: Puzzle, label: t('extensions') },
     { id: 'shortcuts', icon: Keyboard, label: t('shortcuts') },
     { id: 'security', icon: Shield, label: t('security') },
+    { id: 'sync', icon: Cloud, label: 'GitHub Sync' },
     { id: 'about', icon: Info, label: t('about') },
   ]
 
@@ -255,16 +243,7 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
               </div>
             )}
 
-            {active === 'shortcuts' && (
-              <div className="space-y-0.5">
-                {shortcutList.map(s => (
-                  <div key={s.keys} className="flex items-center justify-between px-2 h-7 hover:bg-vscode-hover rounded">
-                    <span className="text-[12px] text-vscode-text">{t(s.dk)}</span>
-                    <kbd className="px-1.5 py-0.5 bg-vscode-input border border-vscode-border rounded text-[10px] text-vscode-text-dim font-mono">{s.keys}</kbd>
-                  </div>
-                ))}
-              </div>
-            )}
+            {active === 'shortcuts' && <ShortcutEditor />}
 
             {active === 'security' && (
               <div className="space-y-3">
@@ -280,10 +259,13 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
               </div>
             )}
 
+            {active === 'sync' && <SyncSettings />}
+
             {active === 'about' && (
               <div className="space-y-2 text-[12px] text-vscode-text">
-                <div className="text-lg font-semibold text-white">OmniTerm</div>
-                <div className="text-vscode-text-dim">v0.1.0 — {t('builtWith')}</div>
+                <img src={logoImg} alt="OmniMind" className="w-16 h-16 mx-auto mb-2" />
+                <div className="text-lg font-semibold text-white text-center">OmniMind</div>
+                <div className="text-vscode-text-dim text-center">v0.1.0 — {t('builtWith')}</div>
 
                 {/* Update check */}
                 <div className="mt-3 p-2 bg-vscode-input border border-vscode-border rounded">
@@ -345,13 +327,179 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
                : hasChanges ? <span className="text-vscode-yellow">{t('unsaved')}</span> : null}
             </div>
             <div className="flex items-center gap-2">
-              <button onClick={() => { cancel(); onClose() }} className="px-3 h-7 text-[12px] text-vscode-text-muted hover:text-vscode-text hover:bg-vscode-hover rounded transition-colors">{t('cancel')}</button>
               <button onClick={() => { apply(); onClose() }}
-                className="px-5 h-7 bg-vscode-accent hover:bg-vscode-accent-hover text-white rounded text-[12px] font-medium transition-colors">{t('close')}</button>
+                className="px-5 h-7 bg-vscode-accent hover:bg-vscode-accent-hover text-white rounded text-[12px] font-medium transition-colors">保存并关闭</button>
             </div>
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function SyncSettings() {
+  const [token, setToken] = useState(localStorage.getItem('gh_token') || '')
+  const [gistID, setGistID] = useState(localStorage.getItem('gh_gist_id') || '')
+  const [status, setStatus] = useState('')
+  const [syncing, setSyncing] = useState(false)
+
+  const saveCreds = () => {
+    localStorage.setItem('gh_token', token)
+    localStorage.setItem('gh_gist_id', gistID)
+    setStatus('已保存')
+    setTimeout(() => setStatus(''), 2000)
+  }
+
+  const doSync = async (action: 'push' | 'pull') => {
+    if (!token) { setStatus('请先输入 Token'); return }
+    setSyncing(true); setStatus(action === 'push' ? '上传中...' : '下载中...')
+    try {
+      const mod = await import('../../wailsjs/go/main/App')
+      if (action === 'push') {
+        const sessions = JSON.stringify(await mod.ListSessions())
+        const folders = JSON.stringify(await mod.ListFolders())
+        const macros = localStorage.getItem('omni-macros2') || '[]'
+        const settings = localStorage.getItem('omni-config2') || '{}'
+        const devices = localStorage.getItem('omni-devices2') || '[]'
+        const newGistID = await mod.SyncPush(token, gistID, sessions, folders, macros, settings, devices)
+        if (newGistID && !gistID) { setGistID(newGistID); localStorage.setItem('gh_gist_id', newGistID) }
+        setStatus('上传完成!')
+      } else {
+        if (!gistID) { setStatus('请先输入 Gist ID'); setSyncing(false); return }
+        const data = await mod.SyncPull(token, gistID)
+        if (data.sessions) {
+          const sessions = JSON.parse(data.sessions)
+          for (const s of sessions) { try { await mod.SaveSession(s) } catch {} }
+          // Reload sessions
+          window.dispatchEvent(new Event('devices-changed'))
+        }
+        if (data.devices) localStorage.setItem('omni-devices2', data.devices)
+        if (data.macros) localStorage.setItem('omni-macros2', data.macros)
+        if (data.settings) localStorage.setItem('omni-config2', data.settings)
+        setStatus('下载完成! 请重启应用以完整刷新')
+      }
+    } catch (err: any) {
+      setStatus('失败: ' + (err?.message || err))
+    }
+    setSyncing(false)
+    setTimeout(() => setStatus(''), 5000)
+  }
+
+  return (
+    <div className="space-y-3 text-[12px] text-vscode-text">
+      <p className="text-vscode-text-dim text-[11px]">同步设备列表、宏指令、设置到 GitHub Gist。数据以加密 JSON 存储在你的私有 Gist 中。</p>
+
+      <div>
+        <div className="text-[11px] text-vscode-text-dim mb-0.5">GitHub Personal Access Token</div>
+        <input type="password" value={token} onChange={e => setToken(e.target.value)}
+          placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+          className="w-full px-2 h-7 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text focus:outline-none focus:border-vscode-accent" />
+        <div className="text-[9px] text-vscode-text-dim mt-0.5">需要 <code className="text-[#ce9178]">gist</code> 权限</div>
+      </div>
+
+      <div>
+        <div className="text-[11px] text-vscode-text-dim mb-0.5">Gist ID (首次上传后自动填入)</div>
+        <input type="text" value={gistID} onChange={e => setGistID(e.target.value)}
+          placeholder="32 位十六进制字符串"
+          className="w-full px-2 h-7 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text font-mono focus:outline-none focus:border-vscode-accent" />
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={() => doSync('push')} disabled={syncing}
+          className="flex items-center gap-1.5 px-3 h-7 bg-vscode-accent hover:bg-vscode-accent-hover text-white rounded text-[11px] disabled:opacity-50">
+          <CloudUpload size={12} /> 上传到 GitHub
+        </button>
+        <button onClick={() => doSync('pull')} disabled={syncing}
+          className="flex items-center gap-1.5 px-3 h-7 bg-vscode-input border border-vscode-border hover:bg-vscode-hover text-vscode-text rounded text-[11px] disabled:opacity-50">
+          <CloudDownload size={12} /> 从 GitHub 下载
+        </button>
+        <button onClick={saveCreds} className="px-3 h-7 bg-vscode-input border border-vscode-border hover:bg-vscode-hover text-vscode-text rounded text-[11px]">
+          保存凭据
+        </button>
+      </div>
+
+      {status && <div className="text-[11px] text-vscode-accent mt-1">{status}</div>}
+    </div>
+  )
+}
+
+function ShortcutEditor() {
+  const { shortcuts, setKeys, reset, resetAll } = useShortcutStore()
+  const [editing, setEditing] = useState<string | null>(null)
+  const [captureKeys, setCaptureKeys] = useState('')
+
+  const startCapture = (id: string) => {
+    setEditing(id)
+    setCaptureKeys('')
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!editing) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    // Build shortcut string
+    const parts: string[] = []
+    if (e.ctrlKey || e.metaKey) parts.push('Ctrl')
+    if (e.shiftKey) parts.push('Shift')
+    if (e.altKey) parts.push('Alt')
+
+    // Ignore pure modifier key presses
+    const modifierKeys = ['Control', 'Shift', 'Alt', 'Meta']
+    if (modifierKeys.includes(e.key)) return
+
+    // Normalize key name
+    let key = e.key
+    if (key === ' ') key = 'Space'
+    if (key.length === 1) key = key.toUpperCase()
+
+    parts.push(key)
+    const shortcut = parts.join('+')
+    setCaptureKeys(shortcut)
+
+    // Save after short delay
+    setTimeout(() => {
+      setKeys(editing, shortcut)
+      setEditing(null)
+      setCaptureKeys('')
+    }, 300)
+  }
+
+  return (
+    <div className="space-y-0.5">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] text-vscode-text-dim">双击快捷键进行编辑，按新组合键替换。点 Reset 恢复默认。</span>
+        <button onClick={resetAll} className="px-2 py-0.5 text-[10px] text-vscode-text-dim hover:text-vscode-red border border-vscode-border rounded">
+          全部重置
+        </button>
+      </div>
+      {shortcuts.map(s => (
+        <div key={s.id}
+          className="flex items-center justify-between px-2 h-7 hover:bg-vscode-hover rounded group"
+          onDoubleClick={() => startCapture(s.id)}
+          onKeyDown={editing === s.id ? handleKeyDown : undefined}
+          tabIndex={editing === s.id ? 0 : -1}
+          style={editing === s.id ? { background: '#007acc33', outline: '1px solid #007acc' } : undefined}>
+          <span className="text-[12px] text-vscode-text">{s.label}</span>
+          <div className="flex items-center gap-1.5">
+            {editing === s.id ? (
+              <span className="px-1.5 py-0.5 bg-vscode-accent text-white rounded text-[10px] font-mono animate-pulse">
+                {captureKeys || '按下新快捷键...'}
+              </span>
+            ) : (
+              <kbd className="px-1.5 py-0.5 bg-vscode-input border border-vscode-border rounded text-[10px] text-vscode-text-dim font-mono">
+                {s.keys}
+              </kbd>
+            )}
+            {s.keys !== s.defaultKeys && (
+              <button onClick={() => reset(s.id)}
+                className="text-[9px] text-vscode-text-dim hover:text-vscode-accent opacity-0 group-hover:opacity-100">
+                重置
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

@@ -1,8 +1,8 @@
 !include "MUI2.nsh"
 
-Name "OmniTerm"
-OutFile "OmniTerm-Setup.exe"
-InstallDir "$PROGRAMFILES\OmniTerm"
+Name "OmniMind"
+OutFile "OmniMind-Setup.exe"
+InstallDir "$PROGRAMFILES\OmniMind"
 RequestExecutionLevel admin
 
 !insertmacro MUI_PAGE_DIRECTORY
@@ -11,18 +11,18 @@ RequestExecutionLevel admin
 
 Section "Install"
   SetOutPath "$INSTDIR"
-  File "..\build\bin\omniterm.exe"
-  CreateShortCut "$DESKTOP\OmniTerm.lnk" "$INSTDIR\omniterm.exe"
-  CreateDirectory "$SMPROGRAMS\OmniTerm"
-  CreateShortCut "$SMPROGRAMS\OmniTerm\OmniTerm.lnk" "$INSTDIR\omniterm.exe"
-  CreateShortCut "$SMPROGRAMS\OmniTerm\Uninstall.lnk" "$INSTDIR\uninstall.exe"
+  File "..\build\bin\omnimind.exe"
+  CreateShortCut "$DESKTOP\OmniMind.lnk" "$INSTDIR\omnimind.exe"
+  CreateDirectory "$SMPROGRAMS\OmniMind"
+  CreateShortCut "$SMPROGRAMS\OmniMind\OmniMind.lnk" "$INSTDIR\omnimind.exe"
+  CreateShortCut "$SMPROGRAMS\OmniMind\Uninstall.lnk" "$INSTDIR\uninstall.exe"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd
 
 Section "Uninstall"
-  Delete "$INSTDIR\omniterm.exe"
+  Delete "$INSTDIR\omnimind.exe"
   Delete "$INSTDIR\uninstall.exe"
-  Delete "$DESKTOP\OmniTerm.lnk"
-  RMDir /r "$SMPROGRAMS\OmniTerm"
+  Delete "$DESKTOP\OmniMind.lnk"
+  RMDir /r "$SMPROGRAMS\OmniMind"
   RMDir "$INSTDIR"
 SectionEnd

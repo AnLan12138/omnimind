@@ -202,8 +202,24 @@ export function StartRecording(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['StartRecording'](arg1, arg2, arg3, arg4);
 }
 
+export function StartSSHTunnel(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['StartSSHTunnel'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function StopRecording(arg1) {
   return window['go']['main']['App']['StopRecording'](arg1);
+}
+
+export function StopSSHTunnel(arg1, arg2) {
+  return window['go']['main']['App']['StopSSHTunnel'](arg1, arg2);
+}
+
+export function SyncPull(arg1, arg2) {
+  return window['go']['main']['App']['SyncPull'](arg1, arg2);
+}
+
+export function SyncPush(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['SyncPush'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 export function Unlock(arg1) {

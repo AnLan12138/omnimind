@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 
 	"go.bug.st/serial"
 )

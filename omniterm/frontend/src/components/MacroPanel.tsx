@@ -61,7 +61,7 @@ export default function MacroPanel({ searchTerm = '', onClose, onSendMacro }: Pr
   // Export/Import
   const exportData = () => {
     const blob = new Blob([JSON.stringify({ groups, cmds }, null, 2)], { type: 'application/json' })
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'omniterm-cmds.json'; a.click()
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'omnimind-cmds.json'; a.click()
     setCtx(null)
   }
   const importData = () => {

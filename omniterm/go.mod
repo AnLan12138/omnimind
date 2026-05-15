@@ -1,4 +1,4 @@
-module omniterm
+module omnimind
 
 go 1.25.0
 

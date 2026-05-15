@@ -22,7 +22,7 @@ import (
 	"github.com/tomatome/grdp/protocol/tpkt"
 	"github.com/tomatome/grdp/protocol/x224"
 
-	"omniterm/internal/protocol"
+	"omnimind/internal/protocol"
 )
 
 type FrameChunk struct {

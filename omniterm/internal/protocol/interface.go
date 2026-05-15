@@ -64,6 +64,10 @@ type ConnConfig struct {
 	KeepAliveSec    int    `json:"keepAliveSec,omitempty"`
 	// Telnet
 	TelnetTermType string `json:"telnetTermType,omitempty"`
+	UseTLS        bool   `json:"useTLS,omitempty"`
+	TLSSkipVerify bool   `json:"tlsSkipVerify,omitempty"`
+	// FTP
+	UseFTPS  string `json:"useFTPS,omitempty"` // "" | "explicit" | "implicit"
 	// Serial
 	BaudRate   int    `json:"baudRate,omitempty"`
 	DataBits   int    `json:"dataBits,omitempty"`
@@ -71,8 +75,9 @@ type ConnConfig struct {
 	Parity     string `json:"parity,omitempty"`
 	FlowControl string `json:"flowControl,omitempty"`
 	// General
-	Rows int `json:"rows"`
-	Cols int `json:"cols"`
+	TermType string `json:"termType,omitempty"` // xterm-256color, vt100, etc.
+	Rows     int    `json:"rows"`
+	Cols     int    `json:"cols"`
 }
 
 type DataCallback func(data []byte)

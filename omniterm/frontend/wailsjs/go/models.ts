@@ -140,6 +140,10 @@ export namespace session {
 	    proxyJump?: string;
 	    keepAliveSec?: number;
 	    telnetTermType?: string;
+	    termType?: string;
+	    useTLS?: boolean;
+	    tlsSkipVerify?: boolean;
+	    useFTPS?: string;
 	    baudRate?: number;
 	    dataBits?: number;
 	    stopBits?: number;
@@ -170,6 +174,10 @@ export namespace session {
 	        this.proxyJump = source["proxyJump"];
 	        this.keepAliveSec = source["keepAliveSec"];
 	        this.telnetTermType = source["telnetTermType"];
+	        this.termType = source["termType"];
+	        this.useTLS = source["useTLS"];
+	        this.tlsSkipVerify = source["tlsSkipVerify"];
+	        this.useFTPS = source["useFTPS"];
 	        this.baudRate = source["baudRate"];
 	        this.dataBits = source["dataBits"];
 	        this.stopBits = source["stopBits"];
