@@ -1,18 +1,19 @@
 import { useState, useEffect } from 'react'
-import { X, Eye, EyeOff, FolderOpen, Monitor, MonitorPlay, Computer, Wifi, Cable } from 'lucide-react'
+import { X, Monitor, MonitorPlay, Computer, Wifi, Cable } from 'lucide-react'
 import { session } from '../../wailsjs/go/models'
-import { SaveSession, DeleteSession, ListFolders } from '../../wailsjs/go/main/App'
-import { useSessionStore } from '../stores/sessionStore'
+import { SaveSession, DeleteSession } from '../../wailsjs/go/main/App'
+import { useI18n } from '../lib/i18n'
 
 interface Props {
   session?: session.Session | null
+  groupId?: string
   onClose: () => void
   onSaved: () => void
+  onConnect?: (sess: any) => void
 }
 
 const PROTOCOLS = [
   { value: 'ssh', label: 'SSH', defaultPort: 22, icon: Monitor, color: '#569cd6' },
-  { value: 'sftp', label: 'SFTP', defaultPort: 22, icon: FolderOpen, color: '#569cd6' },
   { value: 'telnet', label: 'Telnet', defaultPort: 23, icon: Cable, color: '#ce9178' },
   { value: 'serial', label: 'Serial', defaultPort: 0, icon: MonitorPlay, color: '#dcdcaa' },
   { value: 'rdp', label: 'RDP', defaultPort: 3389, icon: Computer, color: '#4ec9b0' },
@@ -29,15 +30,14 @@ const FLOW_CONTROLS = ['none', 'rtscts', 'xonxoff']
 function genId() { return crypto.randomUUID?.() ?? Math.random().toString(36).slice(2, 10) }
 const now = () => new Date().toISOString()
 
-export default function SessionDialog({ session: editSession, onClose, onSaved }: Props) {
-  const { folders } = useSessionStore()
+export default function SessionDialog({ session: editSession, groupId = 'default', onClose, onSaved, onConnect }: Props) {
+  const { t } = useI18n()
   const [protocol, setProtocol] = useState('ssh')
   const [name, setName] = useState('')
   const [host, setHost] = useState('')
   const [port, setPort] = useState('22')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
   // SSH
   const [privateKeyPath, setPrivateKeyPath] = useState('')
   const [useAgent, setUseAgent] = useState(false)
@@ -57,13 +57,19 @@ export default function SessionDialog({ session: editSession, onClose, onSaved }
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+
+  useEffect(() => {
     if (editSession) {
       setProtocol(editSession.protocol || 'ssh')
       setName(editSession.name || '')
       setHost(editSession.host || '')
       setPort(String(editSession.port || 22))
       setUsername(editSession.username || '')
-      setPassword(editSession.password || '')
+      setPassword('')
       setPrivateKeyPath(editSession.privateKeyPath || '')
       setUseAgent(editSession.useAgent || false)
       setProxyJump(editSession.proxyJump || '')
@@ -86,11 +92,12 @@ export default function SessionDialog({ session: editSession, onClose, onSaved }
   }
 
   const handleSave = async () => {
-    if (!name.trim() || !host.trim()) return
+    const sessionName = name.trim() || host.trim()
+    if (!host.trim()) return
     setSaving(true)
     try {
       const s = session.Session.createFrom({
-        id: editSession?.id || genId(), name: name.trim(), protocol, host: host.trim(),
+        id: editSession?.id || genId(), name: sessionName, protocol, host: host.trim(),
         port: parseInt(port) || 22, username: username.trim(), password, privateKeyPath, useAgent,
         proxyJump, keepAliveSec, telnetTermType, baudRate, dataBits, stopBits, parity, flowControl,
         folderId, notes, sortOrder: editSession?.sortOrder || 0,
@@ -104,6 +111,18 @@ export default function SessionDialog({ session: editSession, onClose, onSaved }
         stopBits: s.stopBits || 1.0, parity: s.parity || 'none', flowControl: s.flowControl || 'none',
         folderId: s.folderId || '', sortOrder: s.sortOrder || 0, createdAt: s.createdAt, updatedAt: s.updatedAt,
       })
+      // Also save to sidebar device list
+      try {
+        const devices: any[] = JSON.parse(localStorage.getItem('omni-devices2') || '[]')
+        devices.push({ id: genId(), name: sessionName, host: host.trim(), port: parseInt(port) || 22, username: username.trim(), protocol, status: 'offline', groupId })
+        localStorage.setItem('omni-devices2', JSON.stringify(devices))
+        // Trigger sidebar refresh
+        window.dispatchEvent(new Event('devices-changed'))
+      } catch {}
+      // Connect immediately after saving
+      if (onConnect) {
+        onConnect({ id: s.id, name: sessionName, protocol, host: host.trim(), port: parseInt(port) || 22, username: username.trim(), password, privateKeyPath, useAgent, proxyJump, keepAliveSec: keepAliveSec || 30 })
+      }
       onSaved(); onClose()
     } catch (err) { console.error('Save failed:', err) }
     finally { setSaving(false) }
@@ -116,28 +135,28 @@ export default function SessionDialog({ session: editSession, onClose, onSaved }
 
   const input = (label: string, value: string, set: (v: string) => void, opts?: { placeholder?: string; type?: string; className?: string }) => (
     <div>
-      <label className="block text-[11px] text-vscode-text-dim mb-1">{label}</label>
+      <label className="block text-[13px] text-vscode-text mb-1">{label}</label>
       <input type={opts?.type || 'text'} value={value} onChange={e => set(e.target.value)} placeholder={opts?.placeholder}
-        className={`px-2 h-7 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text placeholder-vscode-text-dim focus:outline-none focus:border-vscode-accent ${opts?.className || 'w-full'}`} />
+        className={`px-2.5 h-8 bg-vscode-input border border-vscode-border rounded text-[13px] text-vscode-text placeholder-vscode-text-dim focus:outline-none focus:border-vscode-accent ${opts?.className || 'w-full'}`} />
     </div>
   )
 
   const select = (label: string, value: any, set: (v: any) => void, options: any[]) => (
     <div>
-      <label className="block text-[11px] text-vscode-text-dim mb-1">{label}</label>
+      <label className="block text-[13px] text-vscode-text mb-1">{label}</label>
       <select value={value} onChange={e => set(e.target.value)}
-        className="w-full px-2 h-7 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text focus:outline-none focus:border-vscode-accent">
+        className="w-full px-2.5 h-8 bg-vscode-input border border-vscode-border rounded text-[13px] text-vscode-text focus:outline-none focus:border-vscode-accent">
         {options.map(o => <option key={String(o)} value={o}>{o}</option>)}
       </select>
     </div>
   )
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-vscode-panel border border-vscode-border rounded-lg shadow-2xl w-[660px] max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-4 h-10 border-b border-vscode-border">
-          <span className="text-[13px] font-semibold text-vscode-text">{editSession ? 'Edit Session' : 'New Session'}</span>
+          <span className="text-[15px] font-semibold text-white">{editSession ? t('editSession') : t('newSession')}</span>
           <button onClick={onClose} className="p-1 hover:bg-vscode-hover rounded"><X size={14} className="text-vscode-text-muted" /></button>
         </div>
 
@@ -161,42 +180,33 @@ export default function SessionDialog({ session: editSession, onClose, onSaved }
 
         {/* Connection params */}
         <div className="p-4 space-y-3">
-          <div className="grid grid-cols-[1fr_100px_120px_120px] gap-3">
-            {input('Host', host, setHost, { placeholder: '192.168.1.1' })}
-            {input('Port', port, setPort, { placeholder: '22' })}
-            {input('Username', username, setUsername, { placeholder: 'root' })}
-            <div>
-              <label className="block text-[11px] text-vscode-text-dim mb-1">Password</label>
-              <div className="relative">
-                <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
-                  className="w-full px-2 h-7 pr-8 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text focus:outline-none focus:border-vscode-accent" />
-                <button onClick={() => setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2">
-                  {showPassword ? <EyeOff size={12} className="text-vscode-text-muted" /> : <Eye size={12} className="text-vscode-text-muted" />}
-                </button>
-              </div>
-            </div>
+          <div className="grid grid-cols-2 gap-3">
+            {input(t('host'), host, setHost, { placeholder: '192.168.1.1' })}
+            {input(t('port'), port, setPort, { placeholder: '22' })}
+            {input(t('username'), username, setUsername, { placeholder: 'root' })}
+            {input(t('password'), password, setPassword, { placeholder: '密码', type: 'password' })}
           </div>
 
-          {input('Session Name', name, setName, { placeholder: 'My Server' })}
+          {input(t('sessionName'), name, setName, { placeholder: 'My Server' })}
 
           {/* SSH options */}
           {protocol === 'ssh' && (
             <div className="space-y-3 pt-2 border-t border-vscode-border">
-              <div className="text-[11px] text-vscode-text-dim uppercase tracking-wider">SSH Options</div>
+              <div className="text-[12px] text-vscode-text-muted uppercase tracking-wider">{t('sshOptions')}</div>
               <div className="grid grid-cols-2 gap-3">
-                {input('Private Key Path', privateKeyPath, setPrivateKeyPath, { placeholder: '~/.ssh/id_ed25519' })}
-                {input('ProxyJump', proxyJump, setProxyJump, { placeholder: 'bastion:22' })}
+                {input(t('privateKey'), privateKeyPath, setPrivateKeyPath, { placeholder: '~/.ssh/id_ed25519' })}
+                {input(t('proxyJump'), proxyJump, setProxyJump, { placeholder: 'bastion:22' })}
               </div>
               <div className="flex items-center gap-6">
                 <label className="flex items-center gap-2 text-[12px] text-vscode-text cursor-pointer">
                   <input type="checkbox" checked={useAgent} onChange={e => setUseAgent(e.target.checked)}
                     className="rounded accent-vscode-accent" />
-                  Use SSH Agent
+                  {t('useAgent')}
                 </label>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-vscode-text-dim">KeepAlive (s)</span>
+                  <span className="text-[13px] text-vscode-text">{t('keepAlive')}</span>
                   <input type="number" value={keepAliveSec} onChange={e => setKeepAliveSec(Number(e.target.value) || 30)}
-                    className="w-16 px-2 h-7 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text focus:outline-none focus:border-vscode-accent" />
+                    className="w-16 px-2.5 h-8 bg-vscode-input border border-vscode-border rounded text-[13px] text-vscode-text focus:outline-none focus:border-vscode-accent" />
                 </div>
               </div>
             </div>
@@ -205,45 +215,32 @@ export default function SessionDialog({ session: editSession, onClose, onSaved }
           {/* Telnet options */}
           {protocol === 'telnet' && (
             <div className="space-y-3 pt-2 border-t border-vscode-border">
-              <div className="text-[11px] text-vscode-text-dim uppercase tracking-wider">Telnet Options</div>
-              {select('Terminal Type', telnetTermType, setTelnetTermType, ['XTERM-256COLOR', 'XTERM', 'VT220', 'VT100', 'ANSI', 'IBM-3278-2'])}
+              <div className="text-[12px] text-vscode-text-muted uppercase tracking-wider">{t('telnetOptions')}</div>
+              {select(t('terminalType'), telnetTermType, setTelnetTermType, ['XTERM-256COLOR', 'XTERM', 'VT220', 'VT100', 'ANSI', 'IBM-3278-2'])}
             </div>
           )}
 
           {/* Serial options */}
           {protocol === 'serial' && (
             <div className="space-y-3 pt-2 border-t border-vscode-border">
-              <div className="text-[11px] text-vscode-text-dim uppercase tracking-wider">Serial Options</div>
+              <div className="text-[12px] text-vscode-text-muted uppercase tracking-wider">{t('serialOptions')}</div>
               <div className="grid grid-cols-5 gap-3">
-                {select('Baud', baudRate, setBaudRate, BAUDS)}
-                {select('Data Bits', dataBits, setDataBits, DATA_BITS)}
-                {select('Stop Bits', stopBits, setStopBits, STOP_BITS)}
-                {select('Parity', parity, setParity, PARITIES)}
-                {select('Flow', flowControl, setFlowControl, FLOW_CONTROLS)}
+                {select(t('baud'), baudRate, setBaudRate, BAUDS)}
+                {select(t('dataBits'), dataBits, setDataBits, DATA_BITS)}
+                {select(t('stopBits'), stopBits, setStopBits, STOP_BITS)}
+                {select(t('parity'), parity, setParity, PARITIES)}
+                {select(t('flowControl'), flowControl, setFlowControl, FLOW_CONTROLS)}
               </div>
             </div>
           )}
 
           {/* RDP/VNC/FTP - no extra options for now */}
 
-          {/* Folder + Notes */}
-          <div className="grid grid-cols-2 gap-3 pt-2 border-t border-vscode-border">
-            <div>
-              <label className="block text-[11px] text-vscode-text-dim mb-1">Folder</label>
-              <div className="flex items-center gap-1">
-                <FolderOpen size={12} className="text-vscode-text-muted ml-1" />
-                <select value={folderId} onChange={e => setFolderId(e.target.value)}
-                  className="flex-1 px-2 h-7 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text focus:outline-none focus:border-vscode-accent">
-                  <option value="">None</option>
-                  {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="block text-[11px] text-vscode-text-dim mb-1">Notes</label>
-              <input type="text" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional..."
-                className="w-full px-2 h-7 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text placeholder-vscode-text-dim focus:outline-none focus:border-vscode-accent" />
-            </div>
+          {/* Notes */}
+          <div className="pt-2 border-t border-vscode-border">
+            <label className="block text-[13px] text-vscode-text mb-1">{t('notes')}</label>
+            <input type="text" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional..."
+              className="w-full px-2.5 h-8 bg-vscode-input border border-vscode-border rounded text-[13px] text-vscode-text placeholder-vscode-text-dim focus:outline-none focus:border-vscode-accent" />
           </div>
         </div>
 
@@ -252,19 +249,19 @@ export default function SessionDialog({ session: editSession, onClose, onSaved }
           <div>
             {editSession && (
               <button onClick={handleDelete}
-                className="px-3 h-6 text-[11px] text-vscode-red hover:bg-red-500/10 rounded transition-colors">
-                Delete Session
+                className="px-3 h-7 text-[12px] text-vscode-red hover:bg-red-500/10 rounded transition-colors">
+                {t('deleteSession')}
               </button>
             )}
           </div>
           <div className="flex gap-2">
             <button onClick={onClose}
-              className="px-4 h-6 text-[11px] text-vscode-text-muted hover:text-vscode-text rounded hover:bg-vscode-hover transition-colors">
-              Cancel
+              className="px-4 h-7 text-[12px] text-vscode-text-muted hover:text-vscode-text rounded hover:bg-vscode-hover transition-colors">
+              {t('cancel')}
             </button>
-            <button onClick={handleSave} disabled={saving || !name.trim() || !host.trim()}
-              className="px-5 h-6 bg-vscode-accent hover:bg-vscode-accent-hover disabled:opacity-40 text-white rounded text-[11px] font-medium transition-colors">
-              {saving ? 'Saving...' : editSession ? 'Save & Connect' : 'Save & Connect'}
+            <button onClick={handleSave} disabled={saving || !host.trim()}
+              className="px-5 h-7 bg-vscode-accent hover:bg-vscode-accent-hover disabled:opacity-40 text-white rounded text-[12px] font-medium transition-colors">
+              {saving ? t('saving') : t('saveConnect')}
             </button>
           </div>
         </div>

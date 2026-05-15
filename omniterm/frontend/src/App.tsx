@@ -8,15 +8,15 @@ import VNCViewer from './components/VNCViewer'
 import RDPViewer from './components/RDPViewer'
 import StatusBar from './components/StatusBar'
 import SessionDialog from './components/SessionDialog'
+import { useBroadcastStore } from './stores/broadcastStore'
 import SettingsDialog from './components/SettingsDialog'
 import { useTabStore } from './stores/tabStore'
 import { useSessionStore, type Session } from './stores/sessionStore'
-import { ListSessions, ListFolders, Connect } from '../wailsjs/go/main/App'
+import { ListSessions, ListFolders, Connect, LaunchProgram } from '../wailsjs/go/main/App'
 import { useConfigStore, getScaleSize } from './stores/configStore'
+import { useExtensionStore } from './stores/extensionStore'
 import MacroPanel from './components/MacroPanel'
 import FilePanel from './components/FilePanel'
-import TunnelPanel from './components/TunnelPanel'
-import MonitorPanel from './components/MonitorPanel'
 
 function genId() { return crypto.randomUUID?.() ?? Math.random().toString(36).slice(2, 10) }
 
@@ -25,9 +25,13 @@ export default function App() {
   const { setSessions, setFolders } = useSessionStore()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingSession, setEditingSession] = useState<Session | null>(null)
+  const [defaultGroupId, setDefaultGroupId] = useState('default')
   const [activeView, setActiveView] = useState('sessions')
+  const broadcastActive = useBroadcastStore(s => s.active)
+  const broadcastIncluded = useBroadcastStore(s => s.included)
   const [panelVisible, setPanelVisible] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [sidebarSearch, setSidebarSearch] = useState('')
 
   const uiScale = useConfigStore(s => s.uiScale)
@@ -56,12 +60,38 @@ export default function App() {
     try { setSessions((await ListSessions()) || []); setFolders((await ListFolders()) || []) } catch {}
   }
 
-  const handleDoubleClick = useCallback(async (sess: Session) => {
+  const doConnect = useCallback(async (sess: any) => {
     const connId = genId()
     const title = `${sess.username ? sess.username + '@' : ''}${sess.host}:${sess.port}`
-    addTab({ id: genId(), title, protocol: sess.protocol, connId, active: true, state: 'connecting' })
-    try { await Connect(connId, sess) } catch { useTabStore.getState().updateTabState(connId, 'error') }
+    addTab({ id: genId(), title, protocol: sess.protocol || 'ssh', connId, active: true, state: 'connecting' })
+    try { await Connect(connId, sess) } catch (err: any) {
+      console.error('Connect failed:', err)
+      alert('Connection failed: ' + (err?.message || err || 'Unknown error'))
+      useTabStore.getState().updateTabState(connId, 'error')
+    }
   }, [addTab])
+
+  const handleDoubleClick = useCallback(async (sess: Session) => {
+    doConnect(sess)
+  }, [doConnect])
+
+  const handleNewSessionWithGroup = useCallback((groupId: string) => {
+    setDefaultGroupId(groupId)
+    setEditingSession(null)
+    setDialogOpen(true)
+  }, [])
+
+  const handleOpenEditor = useCallback(() => {
+    const store = useExtensionStore.getState()
+    const path = store.getPath('text-editor')
+    if (path) {
+      const args = store.getArgs('text-editor')
+      LaunchProgram(path, args).catch(() => alert('Failed to launch editor'))
+    } else {
+      setSettingsTab('extensions')
+      setSettingsOpen(true)
+    }
+  }, [])
 
   const handleDisconnect = useCallback(async (connId: string) => {
     try { await window.go.main.App.Disconnect(connId) } catch {}
@@ -75,57 +105,57 @@ export default function App() {
         <ActivityBar
           activeView={activeView}
           sidebarVisible={activeView === 'sessions'}
+          broadcastActive={broadcastActive}
+          onToggleBroadcast={() => {
+            const store = useBroadcastStore.getState()
+            if (store.active) store.stop()
+            else store.start(tabs.filter(t => t.state === 'connected').map(t => t.connId))
+          }}
           onViewChange={v => {
             if (v === 'new') { setEditingSession(null); setDialogOpen(true) }
-            else if (v === 'sessions') { setActiveView(activeView === 'sessions' ? 'terminal' : 'sessions') }
-            else if (v === 'split') { const tab = tabs.find(t => t.active); if (tab) { /* trigger split */ } }
             else if (v === 'sessions') { setActiveView(activeView === 'sessions' ? 'terminal' : 'sessions') }
             else if (v === 'terminal') { setActiveView('terminal') }
             else if (v === 'settings') { setSettingsOpen(true); setActiveView('sessions') }
             else { setActiveView(activeView === v ? 'terminal' : v) }
-          }} />
+          }}
+          onOpenEditor={handleOpenEditor} />
 
         {/* Side panel area — changes based on active view */}
         {activeView !== 'terminal' && (
           <div className="w-60 shrink-0 border-r border-vscode-border bg-vscode-sidebar flex flex-col h-full">
-            {/* Persistent search box */}
             <div className="px-1.5 pt-1.5 pb-1 shrink-0 relative">
               <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-vscode-text-dim pointer-events-none" />
-              <input type="text"
-                placeholder={activeView === 'sessions' ? 'Search sessions...' : activeView === 'macro' ? 'Search macros...' : activeView === 'sftp' ? 'Search files...' : 'Search...'}
-                value={sidebarSearch}
+              <input type="text" placeholder="搜索..." value={sidebarSearch}
                 onChange={e => setSidebarSearch(e.target.value)}
                 className="w-full h-7 pl-7 pr-2 bg-vscode-input border border-vscode-border rounded text-[11px] text-vscode-text placeholder-vscode-text-dim focus:outline-none focus:border-vscode-accent" />
             </div>
             <div className="flex-1 min-h-0 overflow-hidden">
               {activeView === 'sessions' && (
-                <SessionSidebar
-                  searchTerm={sidebarSearch}
+                <SessionSidebar searchTerm={sidebarSearch}
                   onDoubleClick={handleDoubleClick}
                   onEditSession={s => { setEditingSession(s); setDialogOpen(true) }}
                   onNewSession={() => { setEditingSession(null); setDialogOpen(true) }}
+                  onNewSessionWithGroup={handleNewSessionWithGroup}
                 />
               )}
               {activeView === 'macro' && (
-                <MacroPanel searchTerm={sidebarSearch} onClose={() => setActiveView('terminal')} onSendMacro={d => { const t = tabs.find(x => x.active); if (t) window.go.main.App.Send(t.connId, d) }} />
+                <MacroPanel searchTerm={sidebarSearch} onClose={() => setActiveView('terminal')} onSendMacro={d => {
+                  const bc = useBroadcastStore.getState()
+                  if (bc.active && bc.included.size > 0) {
+                    bc.included.forEach(cid => { window.go.main.App.Send(cid, d) })
+                  } else {
+                    const t = tabs.find(x => x.active)
+                    if (t) window.go.main.App.Send(t.connId, d)
+                  }
+                }} />
               )}
               {activeView === 'sftp' && (tabs.find(t => t.active) ? (
-                <FilePanel connId={tabs.find(t => t.active)!.connId} onClose={() => setActiveView('terminal')} />
+                <FilePanel connId={tabs.find(t => t.active)!.connId} searchTerm={sidebarSearch} onClose={() => setActiveView('terminal')} />
               ) : (
-                <div className="flex items-center justify-center h-full text-[11px] text-vscode-text-dim p-3 text-center">No active session.<br/>Connect via SSH to browse files.</div>
-              ))}
-              {activeView === 'tunnel' && (tabs.find(t => t.active) ? (
-                <TunnelPanel connId={tabs.find(t => t.active)!.connId} onClose={() => setActiveView('terminal')} />
-              ) : (
-                <div className="flex items-center justify-center h-full text-[11px] text-vscode-text-dim p-3 text-center">No active session.<br/>Connect via SSH to create tunnels.</div>
-              ))}
-              {activeView === 'monitor' && (tabs.find(t => t.active) ? (
-                <MonitorPanel connId={tabs.find(t => t.active)!.connId} onClose={() => setActiveView('terminal')} />
-              ) : (
-                <div className="flex items-center justify-center h-full text-[11px] text-vscode-text-dim p-3 text-center">No active session to monitor.</div>
+                <div className="flex items-center justify-center h-full text-[11px] text-vscode-text-dim p-3 text-center">没有活动连接</div>
               ))}
               {activeView === 'split' && (
-                <div className="p-3 text-[11px] text-vscode-text-dim">Connect multiple sessions then use Split View to see them all.</div>
+                <div className="p-3 text-[11px] text-vscode-text-dim">连接多台设备后使用分屏视图</div>
               )}
             </div>
           </div>
@@ -151,8 +181,33 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            ) : broadcastActive ? (
+              /* MultiExec grid: 2 columns, all CONNECTED tabs */
+              <div className="h-full overflow-auto p-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.min(tabs.filter(t => t.state === 'connected').length, 2)}, 1fr)`, gridAutoRows: `1fr` }}>
+                {tabs.filter(t => t.state === 'connected').map(tab => (
+                  <div key={tab.id} className="border-2 border-vscode-accent/50 rounded overflow-hidden bg-vscode-bg min-h-0">
+                    <div className="flex items-center justify-between h-6 px-2 bg-vscode-accent/20 text-[10px]">
+                      <span className="truncate text-vscode-text">{tab.protocol.toUpperCase()} · {tab.title}</span>
+                      <button tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={() => useBroadcastStore.getState().toggle(tab.connId)}
+                        className="text-[9px] px-1.5 py-0.5 rounded shrink-0 ml-1 font-medium min-w-[32px]"
+                        style={{
+                          background: broadcastIncluded.has(tab.connId) ? '#22c55e22' : '#6b728022',
+                          color: broadcastIncluded.has(tab.connId) ? '#4ec9b0' : '#6a6a6a',
+                          border: '1px solid ' + (broadcastIncluded.has(tab.connId) ? '#22c55e44' : '#6b728044'),
+                        }}>
+                        {broadcastIncluded.has(tab.connId) ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+                    <div className="h-[calc(100%-24px)]">
+                      {tab.protocol === 'vnc' ? <VNCViewer connId={tab.connId} onDisconnect={handleDisconnect} />
+                       : tab.protocol === 'rdp' ? <RDPViewer connId={tab.connId} onDisconnect={handleDisconnect} />
+                       : <Terminal connId={tab.connId} onDisconnect={handleDisconnect} />}
+                    </div>
+                  </div>
+                ))}
+              </div>
             ) : activeView === 'split' ? (
-              /* Split grid: 2 columns, all connected tabs */
+              /* Split grid: 2 columns, all tabs */
               <div className="h-full overflow-auto p-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.min(tabs.length, 2)}, 1fr)`, gridAutoRows: `1fr` }}>
                 {tabs.map(tab => (
                   <div key={tab.id} className="border border-vscode-border rounded overflow-hidden bg-vscode-bg min-h-0">
@@ -183,8 +238,8 @@ export default function App() {
 
       <StatusBar onTogglePanel={() => setPanelVisible(!panelVisible)} panelVisible={panelVisible} />
 
-      {dialogOpen && <SessionDialog session={editingSession} onClose={() => setDialogOpen(false)} onSaved={loadSessions} />}
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {dialogOpen && <SessionDialog session={editingSession} groupId={defaultGroupId} onClose={() => setDialogOpen(false)} onSaved={loadSessions} onConnect={doConnect} />}
+      {settingsOpen && <SettingsDialog onClose={() => { setSettingsOpen(false); setSettingsTab(undefined) }} initialTab={settingsTab} />}
     </div>
   )
 }

@@ -31,6 +31,8 @@ export function GenerateSSHKey(arg1:string,arg2:string):Promise<string>;
 
 export function GetConnectionState(arg1:string):Promise<string>;
 
+export function GetLatency(arg1:string):Promise<number>;
+
 export function Greet(arg1:string):Promise<string>;
 
 export function ImportMobaXterm(arg1:string):Promise<number>;
@@ -43,6 +45,8 @@ export function InstallUpdate(arg1:string):Promise<void>;
 
 export function IsLocked():Promise<boolean>;
 
+export function LaunchProgram(arg1:string,arg2:string):Promise<void>;
+
 export function ListFTP(arg1:string,arg2:string):Promise<Array<ftp.FileInfo>>;
 
 export function ListFolders():Promise<Array<session.Folder>>;
@@ -54,6 +58,10 @@ export function ListSerialPorts():Promise<Array<string>>;
 export function ListSessions():Promise<Array<session.Session>>;
 
 export function OpenSFTP(arg1:string):Promise<void>;
+
+export function PickDownloadDir():Promise<string>;
+
+export function PickExecutable():Promise<string>;
 
 export function RDPSendKeyDown(arg1:string,arg2:number,arg3:string):Promise<void>;
 
@@ -71,6 +79,8 @@ export function RecordData(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function Resize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
+export function SFTPCreateFile(arg1:string,arg2:string):Promise<void>;
+
 export function SFTPDownload(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function SFTPMkdir(arg1:string,arg2:string):Promise<void>;
@@ -81,21 +91,19 @@ export function SFTPRename(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function SFTPUpload(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function SFTPUploadData(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function SaveFolder(arg1:session.Folder):Promise<void>;
 
 export function SaveSession(arg1:session.Session):Promise<void>;
 
 export function Send(arg1:string,arg2:string):Promise<void>;
 
+export function SendPassword(arg1:string,arg2:string):Promise<void>;
+
 export function SetMasterPassword(arg1:string):Promise<void>;
 
-export function StartLocalForward(arg1:string,arg2:number,arg3:string,arg4:number):Promise<void>;
-
 export function StartRecording(arg1:string,arg2:string,arg3:number,arg4:number):Promise<void>;
-
-export function StartRemoteForward(arg1:string,arg2:number,arg3:string,arg4:number):Promise<void>;
-
-export function StartSOCKS5Proxy(arg1:string,arg2:number):Promise<void>;
 
 export function StopRecording(arg1:string):Promise<void>;
 
@@ -104,6 +112,8 @@ export function Unlock(arg1:string):Promise<boolean>;
 export function VNCFrameSize(arg1:string):Promise<number>;
 
 export function VNCRequestUpdate(arg1:string):Promise<void>;
+
+export function VNCSendClipboard(arg1:string,arg2:string):Promise<void>;
 
 export function VNCSendKey(arg1:string,arg2:boolean,arg3:number):Promise<void>;
 

@@ -1,190 +1,308 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Folder, File, Upload, Download, Trash2, Plus, ArrowLeft, RefreshCw, ChevronRight, HardDrive, Server } from 'lucide-react'
-import { OpenSFTP, ListSFTP, SFTPDownload, SFTPUpload, SFTPMkdir, SFTPRemove, SFTPRename, ListFTP, FTPDownload, FTPUpload, FTPMkdir, FTPRemove } from '../../wailsjs/go/main/App'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Folder, File, Upload, Download, Trash2, Plus, ArrowLeft, RefreshCw, ChevronRight, Home, FilePlus } from 'lucide-react'
+import { OpenSFTP, ListSFTP, SFTPDownload, SFTPMkdir, SFTPRemove, SFTPCreateFile, SFTPUploadData, PickDownloadDir } from '../../wailsjs/go/main/App'
+import FormDialog from './FormDialog'
 
-interface FileInfo { name: string; path: string; size: number; isDir: boolean; modTime: string; perm?: string }
-interface Props { connId: string; protocol?: string; onClose: () => void }
+interface FileInfo { name: string; path: string; size: number; isDir: boolean; modTime: string }
+interface Props { connId: string; searchTerm?: string; onClose: () => void }
 
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i]
+function formatSize(b: number): string {
+  if (b === 0) return '0 B'
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(b) / Math.log(1024))
+  return (b / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + u[i]
 }
 
-export default function FilePanel({ connId, protocol = 'ssh', onClose }: Props) {
-  const [remotePath, setRemotePath] = useState('/')
+function parentPath(p: string): string {
+  if (p === '/') return '/'
+  const parts = p.replace(/\\/g, '/').split('/').filter(Boolean)
+  parts.pop()
+  return '/' + parts.join('/')
+}
+
+export default function FilePanel({ connId, searchTerm = '', onClose }: Props) {
+  const [path, setPath] = useState('/')
   const [files, setFiles] = useState<FileInfo[]>([])
   const [loading, setLoading] = useState(false)
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
-  const [transferring, setTransferring] = useState<string[]>([])
-  const dropRef = useRef<HTMLDivElement>(null)
-  const localInputRef = useRef<HTMLInputElement>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [dragOver, setDragOver] = useState(false)
+  const [draggingDownload, setDraggingDownload] = useState<FileInfo | null>(null)
+  const [ctx, setCtx] = useState<{ x: number; y: number; target: FileInfo } | null>(null)
+  const [dialog, setDialog] = useState<{ type: string } | null>(null)
+  const [dName, setDName] = useState('')
+  const uploadRef = useRef<HTMLInputElement>(null)
+  const [transferring, setTransferring] = useState<{ active: boolean; text: string; pct: number }>({ active: false, text: '', pct: 0 })
 
-  const isSSH = protocol === 'ssh' || protocol === 'sftp'
-  const isFTP = protocol === 'ftp'
-
-  // Open file system on mount
-  useEffect(() => {
-    if (isSSH) {
-      OpenSFTP(connId).then(() => setReady(true)).catch((e) => setError('SFTP failed: ' + e))
-    } else if (isFTP) {
-      setReady(true) // FTP is already connected
-    }
-  }, [connId])
-
-  const loadDir = useCallback(async (path: string) => {
+  // Init
+  useEffect(() => { OpenSFTP(connId).then(() => setReady(true)).catch(e => setError(e?.message || e)) }, [connId])
+  const load = useCallback(async (p: string) => {
     setLoading(true); setError('')
-    try {
-      let entries: FileInfo[]
-      if (isSSH) entries = await ListSFTP(connId, path)
-      else if (isFTP) entries = await ListFTP(connId, path)
-      else return
-      setFiles(entries)
-      setRemotePath(path)
-      setSelectedFiles(new Set())
-    } catch (e: any) { setError(e?.message || 'List failed') }
+    try { setFiles((await ListSFTP(connId, p)) || []); setPath(p); setSelected(new Set()) }
+    catch (e: any) { setError(e?.message || 'List failed') }
     finally { setLoading(false) }
-  }, [connId, isSSH, isFTP])
+  }, [connId])
+  useEffect(() => { if (ready) load(path) }, [ready, load])
 
-  useEffect(() => { if (ready) loadDir(remotePath) }, [ready])
-
-  const goUp = () => {
-    const parts = remotePath.replace(/\\/g, '/').split('/').filter(Boolean)
-    parts.pop()
-    loadDir('/' + parts.join('/'))
-  }
-  const enterDir = (f: FileInfo) => { if (f.isDir) loadDir(f.path) }
-  const toggleSelect = (name: string) => {
-    setSelectedFiles((p) => { const n = new Set(p); n.has(name) ? n.delete(name) : n.add(name); return n })
-  }
-
-  // Upload via file picker
-  const handleUploadClick = () => localInputRef.current?.click()
-  const handleUploadFiles = async (files: FileList) => {
-    for (const f of Array.from(files)) {
-      const remoteFile = remotePath + '/' + f.name
-      setTransferring((t) => [...t, f.name])
-      try {
-        if (isSSH) await SFTPUpload(connId, (f as any).path || f.name, remoteFile)
-        else if (isFTP) await FTPUpload(connId, (f as any).path || f.name, remoteFile)
-      } catch (e) { console.error('Upload failed:', e) }
-      setTransferring((t) => t.filter((x) => x !== f.name))
+  // Keyboard
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const inInput = (e.target as HTMLElement)?.closest('input')
+      if (inInput) return
+      if (e.key === 'Backspace') { e.preventDefault(); goUp() }
+      if (e.key === 'Delete' && selected.size > 0) { e.preventDefault(); setDialog({ type: 'delete' }) }
+      if (e.key === 'F5') { e.preventDefault(); load(path) }
     }
-    loadDir(remotePath)
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [path, selected])
+
+  // Context menu close
+  useEffect(() => { const h = () => setCtx(null); if (ctx) { window.addEventListener('click', h); return () => window.removeEventListener('click', h) } }, [ctx])
+
+  const goUp = () => { if (path !== '/') load(parentPath(path)) }
+  const enterDir = (f: FileInfo) => { if (f.isDir) load(f.path) }
+  const toggleSelect = (name: string, ctrl: boolean) => {
+    setSelected((p: Set<string>) => {
+      const n = ctrl ? new Set<string>(p) : new Set<string>()
+      n.has(name) ? n.delete(name) : n.add(name)
+      return n
+    })
   }
 
-  // Drag & drop upload
+  // Filter
+  const filtered = useMemo(() => {
+    if (!searchTerm.trim()) return files
+    const q = searchTerm.toLowerCase()
+    return files.filter(f => f.name.toLowerCase().includes(q))
+  }, [files, searchTerm])
+
+  // Operations
+  const op = {
+    delete: async () => {
+      setDialog(null)
+      for (const name of selected) { const f = files.find(x => x.name === name); if (f) await SFTPRemove(connId, f.path).catch(() => {}) }
+      load(path)
+    },
+    newFolder: async () => {
+      if (!dName.trim()) return; setDialog(null)
+      await SFTPMkdir(connId, path + '/' + dName.trim()).catch(e => setError(e?.message || e))
+      load(path); setDName('')
+    },
+    newFile: async () => {
+      if (!dName.trim()) return; setDialog(null)
+      await SFTPCreateFile(connId, path + '/' + dName.trim()).catch(e => setError(e?.message || e))
+      load(path); setDName('')
+    },
+    download: async () => {
+      if (!dName.trim()) return; setDialog(null)
+      for (const name of selected) {
+        const f = files.find(x => x.name === name)
+        if (f && !f.isDir) await SFTPDownload(connId, f.path, dName.trim() + '/' + f.name).catch(() => {})
+      }
+    },
+  }
+
+  // Breadcrumbs
+  const crumbs = () => {
+    const parts = path.replace(/\\/g, '/').split('/').filter(Boolean)
+    const items = [{ name: '/', path: '/' }]
+    let current = ''
+    for (const p of parts) { current += '/' + p; items.push({ name: p, path: current }) }
+    return items
+  }
+
+  // Upload a browser File as base64 (handles flat files, folders handled separately)
+  const uploadBuf = (f: File, remoteDir: string): Promise<void> => new Promise(resolve => {
+    const r = new FileReader()
+    r.onload = () => {
+      const b64 = (r.result as string).split(',')[1] || ''
+      SFTPUploadData(connId, remoteDir + '/' + f.name, b64).catch(() => {}).finally(resolve)
+    }
+    r.onerror = () => resolve()
+    r.readAsDataURL(f)
+  })
+
+  // Recursively traverse dropped items to handle folders
+  const traverseEntries = async (entries: any[], remoteDir: string): Promise<void> => {
+    for (const entry of entries) {
+      if (entry.isFile) {
+        const file: File = await new Promise(resolve => entry.file(resolve))
+        await uploadBuf(file, remoteDir)
+      } else if (entry.isDirectory) {
+        const subDir = remoteDir + '/' + entry.name
+        await SFTPMkdir(connId, subDir).catch(() => {})
+        const reader = entry.createReader()
+        const subEntries: any[] = await new Promise(resolve => {
+          reader.readEntries((entries: any[]) => resolve(entries))
+        })
+        await traverseEntries(subEntries, subDir)
+      }
+    }
+  }
+
   const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    if (e.dataTransfer.files.length > 0) handleUploadFiles(e.dataTransfer.files)
-  }
-  const handleDragOver = (e: React.DragEvent) => { e.preventDefault() }
-
-  // Download selected
-  const handleDownload = async () => {
-    for (const name of selectedFiles) {
-      const f = files.find((x) => x.name === name)
-      if (!f || f.isDir) continue
-      setTransferring((t) => [...t, name])
-      try {
-        if (isSSH) await SFTPDownload(connId, f.path, 'downloads/' + f.name)
-        else if (isFTP) await FTPDownload(connId, f.path, 'downloads/' + f.name)
-      } catch (e) { console.error('Download failed:', e) }
-      setTransferring((t) => t.filter((x) => x !== name))
+    e.preventDefault(); setDragOver(false)
+    const items = e.dataTransfer.items
+    if (items && items.length > 0) {
+      setTransferring({ active: true, text: 'Uploading...', pct: 0 })
+      const done = () => {
+        setTransferring({ active: true, text: 'Upload complete', pct: 100 })
+        setTimeout(() => setTransferring({ active: false, text: '', pct: 0 }), 2500)
+        load(path)
+      }
+      // Try webkitGetAsEntry for folder support
+      const entries: any[] = []
+      for (let i = 0; i < items.length; i++) {
+        const entry = (items[i] as any).webkitGetAsEntry?.()
+        if (entry) entries.push(entry)
+      }
+      if (entries.length > 0) {
+        traverseEntries(entries, path).then(done)
+      } else {
+        // Fallback: flat files
+        Promise.all(Array.from(e.dataTransfer.files).map(f => uploadBuf(f, path))).then(done)
+      }
     }
   }
-
-  // Delete
-  const handleDelete = async () => {
-    if (!confirm(`Delete ${selectedFiles.size} item(s)?`)) return
-    for (const name of selectedFiles) {
-      const f = files.find((x) => x.name === name)
-      if (!f) continue
-      try {
-        if (isSSH) await SFTPRemove(connId, f.path)
-        else if (isFTP) await FTPRemove(connId, f.path)
-      } catch (e) { console.error('Delete failed:', e) }
-    }
-    loadDir(remotePath)
-  }
-
-  // New dir
-  const handleNewDir = async () => {
-    const name = prompt('Directory name:')
-    if (!name) return
-    try {
-      if (isSSH) await SFTPMkdir(connId, remotePath + '/' + name)
-      else if (isFTP) await FTPMkdir(connId, remotePath + '/' + name)
-      loadDir(remotePath)
-    } catch (e) { console.error('Mkdir failed:', e) }
-  }
-
-  const renderFileList = (files: FileInfo[], selected: Set<string>) => (
-    <div className="flex-1 overflow-y-auto" onDrop={handleDrop} onDragOver={handleDragOver}>
-      {loading && files.length === 0 ? (
-        <div className="flex items-center justify-center h-16 text-xs text-text-muted">Loading...</div>
-      ) : (
-        files.map((f) => (
-          <div key={f.name}
-            onClick={() => toggleSelect(f.name)}
-            onDoubleClick={() => enterDir(f)}
-            className={`flex items-center gap-2 px-3 py-1 cursor-pointer text-xs transition-colors ${
-              selected.has(f.name) ? 'bg-accent/10 text-text-primary' : 'text-text-secondary hover:bg-bg-hover'
-            }`}
-          >
-            {f.isDir ? <Folder size={13} className="text-accent-yellow shrink-0" /> : <File size={13} className="text-text-muted shrink-0" />}
-            <span className="flex-1 truncate">{f.name}</span>
-            {transferring.includes(f.name) && <span className="text-[9px] text-accent animate-pulse">...</span>}
-            <span className="text-[10px] text-text-muted w-16 text-right shrink-0">{formatSize(f.size)}</span>
-            <span className="text-[10px] text-text-muted/50 w-16 text-right shrink-0 hidden md:block">{f.modTime?.slice(0, 10) || ''}</span>
-          </div>
-        ))
-      )}
-    </div>
-  )
 
   return (
-    <div className="flex flex-col h-full bg-bg-secondary border-t border-border">
-      {/* Toolbar */}
-      <div className="flex items-center gap-0.5 px-2 py-1 border-b border-border">
-        <button onClick={goUp} className="p-1 hover:bg-bg-hover rounded" title="Up"><ArrowLeft size={14} className="text-text-muted" /></button>
-        <button onClick={() => loadDir(remotePath)} className="p-1 hover:bg-bg-hover rounded" title="Refresh"><RefreshCw size={14} className="text-text-muted" /></button>
-        <span className="text-text-muted/30 mx-1">|</span>
-        <button onClick={handleUploadClick} className="p-1 hover:bg-bg-hover rounded" title="Upload"><Upload size={14} className="text-text-muted" /></button>
-        <button onClick={handleDownload} disabled={selectedFiles.size === 0} className="p-1 hover:bg-bg-hover rounded disabled:opacity-30" title="Download"><Download size={14} className="text-text-muted" /></button>
-        <button onClick={handleNewDir} className="p-1 hover:bg-bg-hover rounded" title="New Folder"><Plus size={14} className="text-text-muted" /></button>
-        <button onClick={handleDelete} disabled={selectedFiles.size === 0} className="p-1 hover:bg-red-500/10 rounded disabled:opacity-30" title="Delete"><Trash2 size={14} className={selectedFiles.size > 0 ? 'text-red-400' : 'text-text-muted'} /></button>
-        <input ref={localInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) handleUploadFiles(e.target.files); e.target.value = '' }} />
+    <div className="flex flex-col h-full bg-vscode-sidebar"
+      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}>
+
+      {/* Drop overlay */}
+      {dragOver && <div className="absolute inset-0 z-10 bg-vscode-accent/10 border-2 border-dashed border-vscode-accent flex items-center justify-center pointer-events-none"><span className="text-vscode-accent text-xs font-medium">Drop to upload</span></div>}
+
+      {/* Breadcrumb */}
+      <div className="flex items-center h-7 px-1 border-b border-vscode-border overflow-x-auto shrink-0">
+        <button onClick={() => load('/')} className="p-0.5 hover:bg-vscode-hover rounded shrink-0"><Home size={12} className="text-vscode-text-muted" /></button>
+        {crumbs().map((c, i) => (
+          <div key={c.path} className="flex items-center shrink-0">
+            <ChevronRight size={10} className="text-vscode-text-dim/40 mx-0.5" />
+            <button onClick={() => load(c.path)}
+              className={`px-1 py-0.5 rounded text-[11px] hover:bg-vscode-hover ${i === crumbs().length - 1 ? 'text-vscode-text font-medium' : 'text-vscode-text-dim'}`}>
+              {c.name}
+            </button>
+          </div>
+        ))}
         <div className="flex-1" />
-        <span className="text-[10px] text-text-muted truncate max-w-[200px]">{remotePath}</span>
       </div>
 
-      {/* Path bar */}
-      <div className="flex items-center px-2 py-0.5 bg-bg-tertiary border-b border-border">
-        <Server size={12} className="text-accent mr-1" />
-        <input type="text" value={remotePath} onChange={(e) => setRemotePath(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') loadDir(remotePath) }}
-          className="flex-1 px-2 py-0.5 bg-transparent text-[11px] text-text-primary font-mono focus:outline-none"
-        />
+      {/* Toolbar */}
+      <div className="flex items-center justify-center h-12 px-1 border-b border-vscode-border gap-1.5 shrink-0">
+        <button onClick={goUp} disabled={path === '/'} className="p-1.5 hover:bg-vscode-hover rounded disabled:opacity-30"><ArrowLeft size={17} className="text-vscode-text-muted" /></button>
+        <button onClick={() => load(path)} className="p-1.5 hover:bg-vscode-hover rounded"><RefreshCw size={17} className={loading ? 'text-vscode-accent animate-spin' : 'text-vscode-text-muted'} /></button>
+        <span className="text-vscode-text-dim/30 mx-1">|</span>
+        <button onClick={() => uploadRef.current?.click()} className="p-1 hover:bg-vscode-hover rounded"><Upload size={17} className="text-vscode-text-muted" /></button>
+        <input ref={uploadRef} type="file" multiple className="hidden" onChange={e => {
+          if (e.target.files && e.target.files.length > 0) {
+            const fl = Array.from(e.target.files)
+            setTransferring({ active: true, text: `Uploading ${fl.length} file(s)...`, pct: 0 })
+            Promise.all(fl.map(f => uploadBuf(f, path))).then(() => {
+              setTransferring({ active: true, text: 'Upload complete', pct: 100 })
+              setTimeout(() => setTransferring({ active: false, text: '', pct: 0 }), 2500)
+              load(path)
+            })
+            e.target.value = ''
+          }
+        }} />
+        <button onClick={async () => {
+          try {
+            const dir = await PickDownloadDir()
+            if (!dir) return
+            const dl = Array.from(selected).filter(name => { const f = files.find(x => x.name === name); return f && !f.isDir }).map(name => files.find(x => x.name === name)!)
+            if (dl.length === 0) return
+            setTransferring({ active: true, text: `Downloading ${dl.length} file(s)...`, pct: 0 })
+            let done = 0
+            for (const f of dl) {
+              setTransferring({ active: true, text: `${f.name}`, pct: Math.round((done / dl.length) * 100) })
+              await SFTPDownload(connId, f.path, dir + '/' + f.name).catch(() => {})
+              done++
+            }
+            setTransferring({ active: true, text: 'Download complete', pct: 100 })
+            setTimeout(() => setTransferring({ active: false, text: '', pct: 0 }), 2500)
+          } catch {}
+        }} disabled={selected.size === 0} className="p-1 hover:bg-vscode-hover rounded disabled:opacity-30" title="Download"><Download size={17} className="text-vscode-text-muted" /></button>
+        <button onClick={() => selected.size > 0 && op.delete()} disabled={selected.size === 0} className="p-1 hover:bg-red-500/10 rounded disabled:opacity-30"><Trash2 size={17} className={selected.size > 0 ? 'text-vscode-red' : 'text-vscode-text-muted'} /></button>
+        <button onClick={() => { setDName('newfile.txt'); setDialog({ type: 'newFile' }) }} className="p-1 hover:bg-vscode-hover rounded"><FilePlus size={17} className="text-vscode-text-muted" /></button>
+        <button onClick={() => { setDName(''); setDialog({ type: 'newFolder' }) }} className="p-1 hover:bg-vscode-hover rounded"><Plus size={17} className="text-vscode-text-muted" /></button>
       </div>
 
       {/* Error */}
-      {error && <div className="px-3 py-1.5 text-xs text-red-400 bg-red-500/5 border-b border-red-500/10">{error}</div>}
+      {error && <div className="px-2 py-1 text-[10px] text-vscode-red bg-red-500/5 border-b border-red-500/10">{error}</div>}
 
-      {/* Files */}
-      {renderFileList(files, selectedFiles)}
+      {/* File list */}
+      <div className="flex-1 overflow-y-auto" onContextMenu={e => e.preventDefault()}>
+        {loading && files.length === 0 ? (
+          <div className="flex items-center justify-center h-16 text-[11px] text-vscode-text-dim">Loading...</div>
+        ) : filtered.length === 0 ? (
+          <div className="flex items-center justify-center h-16 text-[11px] text-vscode-text-dim">{searchTerm ? 'No matches' : 'Empty'}</div>
+        ) : (
+          filtered.map(f => (
+            <div key={f.name}
+              onClick={e => toggleSelect(f.name, e.ctrlKey)}
+              onDoubleClick={() => enterDir(f)}
+              onContextMenu={e => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, target: f }) }}
+              draggable={!f.isDir}
+              onDragStart={e => {
+                if (f.isDir) { e.preventDefault(); return }
+                // Start download for drag-to-desktop
+                const p = '/tmp/omniterm-dl/' + f.name
+                SFTPDownload(connId, f.path, p).catch(() => {})
+                e.dataTransfer.effectAllowed = 'copy'
+                e.dataTransfer.setData('text/plain', f.name)
+                e.dataTransfer.setData('DownloadURL', 'file:///' + p.replace(/\\/g, '/'))
+              }}
+              className={`flex items-center gap-2 px-2 h-7 cursor-pointer text-[11px] border-b border-vscode-border/20 transition-colors ${
+                selected.has(f.name) ? 'bg-vscode-accent/10 text-vscode-text' : 'text-vscode-text hover:bg-vscode-hover'
+              }`}>
+              {f.isDir ? <Folder size={13} className="text-vscode-yellow shrink-0" /> : <File size={13} className="text-vscode-text-muted shrink-0" />}
+              <span className="flex-1 truncate">{f.name}</span>
+              <span className="text-[10px] text-vscode-text-dim w-16 text-right shrink-0">{formatSize(f.size)}</span>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Transfer progress */}
+      {transferring.active && (
+        <div className="flex items-center h-7 px-2 bg-vscode-accent/10 border-t border-vscode-accent/20 text-[11px] text-vscode-accent shrink-0 gap-2">
+          <div className="flex-1 truncate">{transferring.text}</div>
+          <div className="w-20 h-1.5 bg-vscode-bg rounded-full overflow-hidden shrink-0">
+            <div className="h-full bg-vscode-accent rounded-full transition-all duration-300" style={{ width: `${transferring.pct}%` }} />
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
-      <div className="flex items-center px-2 py-0.5 bg-bg-tertiary border-t border-border text-[10px] text-text-muted">
+      <div className="flex items-center h-6 px-2 bg-vscode-bg border-t border-vscode-border text-[10px] text-vscode-text-dim shrink-0">
         <span>{files.length} items</span>
-        {selectedFiles.size > 0 && <><span className="mx-1">|</span><span>{selectedFiles.size} selected</span></>}
+        {selected.size > 0 && <span className="ml-2">{selected.size} selected</span>}
         <div className="flex-1" />
-        <span className="mr-2 text-text-muted/50">Drag files here to upload</span>
-        <button onClick={onClose} className="px-2 py-0.5 hover:bg-bg-hover rounded">Hide</button>
+        <button onClick={onClose} className="px-1 hover:bg-vscode-hover rounded">Hide</button>
       </div>
+
+      {/* Context menu */}
+      {ctx && <div className="fixed z-50 w-40 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctx.x, top: ctx.y }}>
+        <div className="px-3 py-1 text-[10px] text-vscode-text-dim truncate">{ctx.target.name}</div>
+        {ctx.target.isDir && <button onClick={() => { load(ctx.target.path); setCtx(null) }} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">Open</button>}
+        <button onClick={() => { enterDir(ctx.target); setCtx(null) }} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">{ctx.target.isDir ? 'Enter' : 'Open'}</button>
+        <button onClick={() => { setDialog({ type: 'delete' }); setSelected(new Set([ctx.target.name])); setCtx(null) }} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-red"><Trash2 size={12} /> Delete</button>
+      </div>}
+
+      {/* Dialogs */}
+      {dialog?.type === 'delete' && <FormDialog title="删除" danger confirmLabel="删除" confirmDisabled={false}
+        fields={[{ label: '', value: `确定删除 ${selected.size} 个项目？此操作不可恢复。`, set: () => {}, displayOnly: true }]}
+        onConfirm={op.delete} onCancel={() => setDialog(null)} />}
+      {dialog?.type === 'newFolder' && <FormDialog title="新建文件夹" confirmLabel="创建" confirmDisabled={!dName.trim()}
+        fields={[{ label: '名称', value: dName, set: setDName, placeholder: 'newfolder' }]}
+        onConfirm={op.newFolder} onCancel={() => setDialog(null)} />}
+      {dialog?.type === 'newFile' && <FormDialog title="新建文件" confirmLabel="创建" confirmDisabled={!dName.trim()}
+        fields={[{ label: '名称', value: dName, set: setDName, placeholder: 'newfile.txt' }]}
+        onConfirm={op.newFile} onCancel={() => setDialog(null)} />}
     </div>
   )
 }

@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
-import { X, Monitor, Keyboard, Palette, Shield, Info, Check } from 'lucide-react'
+import { X, Monitor, Keyboard, Palette, Shield, Info, Check, Download, Loader2, Puzzle, FolderOpen } from 'lucide-react'
 import { useThemeStore, THEMES } from '../stores/themeStore'
 import { useConfigStore, type AppSettings } from '../stores/configStore'
+import { useExtensionStore } from '../stores/extensionStore'
 import { useI18n } from '../lib/i18n'
+import { CheckForUpdate, InstallUpdate, PickExecutable } from '../../wailsjs/go/main/App'
 
-interface Props { onClose: () => void }
+interface Props { onClose: () => void; initialTab?: string }
 
 const shortcutList = [
   { keys: 'Ctrl+Shift+C', dk: 'copy' },
@@ -28,15 +30,28 @@ const shortcutList = [
   { keys: 'F11', dk: 'toggleFullscreen' },
 ]
 
-export default function SettingsDialog({ onClose }: Props) {
-  const [active, setActive] = useState('appearance')
+export default function SettingsDialog({ onClose, initialTab }: Props) {
+  const [active, setActive] = useState(initialTab || 'appearance')
   const { current, setTheme } = useThemeStore()
   const config = useConfigStore()
   const { t } = useI18n()
+  const extStore = useExtensionStore()
+  const [updateInfo, setUpdateInfo] = useState<any>(null)
+  const [updateState, setUpdateState] = useState<'idle'|'checking'|'available'|'installing'|'done'|'error'>('idle')
+  const [updateErr, setUpdateErr] = useState('')
+
+  useEffect(() => {
+    if (active !== 'about' || updateState !== 'idle') return
+    setUpdateState('checking')
+    CheckForUpdate()
+      .then(r => { if (r) { setUpdateInfo(r); setUpdateState('available') } else { setUpdateState('idle') } })
+      .catch(() => setUpdateState('idle'))
+  }, [active])
 
   const tabs = [
     { id: 'appearance', icon: Palette, label: t('appearance') },
     { id: 'terminal', icon: Monitor, label: t('terminalTab') },
+    { id: 'extensions', icon: Puzzle, label: t('extensions') },
     { id: 'shortcuts', icon: Keyboard, label: t('shortcuts') },
     { id: 'security', icon: Shield, label: t('security') },
     { id: 'about', icon: Info, label: t('about') },
@@ -182,6 +197,64 @@ export default function SettingsDialog({ onClose }: Props) {
               </>
             )}
 
+            {active === 'extensions' && (
+              <div className="space-y-3 text-[12px] text-vscode-text">
+                <div className="text-vscode-text-dim text-[11px]">{t('extensionsDesc')}</div>
+                {extStore.extensions.map(ext => (
+                  <div key={ext.id} className="p-2 bg-vscode-input border border-vscode-border rounded space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-medium text-white">{ext.name}</span>
+                      <span className={`w-1.5 h-1.5 rounded-full ${ext.exePath ? 'bg-vscode-green' : 'bg-vscode-text-dim/30'}`} />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text" readOnly value={ext.exePath}
+                        placeholder={t('selectEditorPath')}
+                        className="flex-1 h-7 px-2 bg-vscode-bg border border-vscode-border rounded text-[11px] text-vscode-text placeholder-vscode-text-dim truncate" />
+                      <button
+                        onClick={async () => {
+                          try { const p = await PickExecutable(); if (p) extStore.setPath(ext.id, p) } catch {}
+                        }}
+                        className="flex items-center gap-1 px-2 h-7 bg-vscode-accent hover:bg-vscode-accent-hover text-white rounded text-[11px] shrink-0">
+                        <FolderOpen size={12} /> {t('browse')}
+                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] text-vscode-text-dim">{t('launchArgs')}</span>
+                      {[
+                        { flag: '-nosession', k: 'argNoSession' },
+                        { flag: '-multiInst', k: 'argMultiInst' },
+                        { flag: '-noPlugin', k: 'argNoPlugin' },
+                      ].map(p => {
+                        const args = ext.args || ''
+                        const checked = args.includes(p.flag)
+                        return (
+                          <label key={p.flag} className="flex items-start gap-1.5 cursor-pointer hover:bg-vscode-hover/50 rounded px-1 py-0.5">
+                            <input type="checkbox" checked={checked}
+                              onChange={() => {
+                                const current = args.split(' ').filter(Boolean)
+                                const next = checked ? current.filter(f => f !== p.flag) : [...current, p.flag]
+                                extStore.setArgs(ext.id, next.join(' '))
+                              }}
+                              className="mt-0.5 shrink-0" />
+                            <div>
+                              <span className="text-[11px] text-vscode-text">{t(p.k)}</span>
+                              <span className="text-[10px] text-vscode-text-dim/60 ml-1 font-mono">{p.flag}</span>
+                            </div>
+                          </label>
+                        )
+                      })}
+                      <input
+                        type="text" value={ext.args || ''}
+                        onChange={e => extStore.setArgs(ext.id, e.target.value)}
+                        placeholder="-nosession -multiInst"
+                        className="w-full h-7 px-2 bg-vscode-bg border border-vscode-border rounded text-[11px] text-vscode-text placeholder-vscode-text-dim font-mono" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {active === 'shortcuts' && (
               <div className="space-y-0.5">
                 {shortcutList.map(s => (
@@ -210,8 +283,50 @@ export default function SettingsDialog({ onClose }: Props) {
             {active === 'about' && (
               <div className="space-y-2 text-[12px] text-vscode-text">
                 <div className="text-lg font-semibold text-white">OmniTerm</div>
-                <div className="text-vscode-text-dim">{t('version')}</div>
-                <div className="text-vscode-text-dim">{t('builtWith')}</div>
+                <div className="text-vscode-text-dim">v0.1.0 — {t('builtWith')}</div>
+
+                {/* Update check */}
+                <div className="mt-3 p-2 bg-vscode-input border border-vscode-border rounded">
+                  {updateState === 'checking' && (
+                    <div className="flex items-center gap-2 text-vscode-text-dim"><Loader2 size={12} className="animate-spin" /> Checking for updates...</div>
+                  )}
+                  {updateState === 'available' && updateInfo && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-vscode-green text-[12px] font-medium"><Download size={13} /> {updateInfo.tag_name} available</div>
+                      {updateInfo.body && <div className="text-[10px] text-vscode-text-dim whitespace-pre-wrap max-h-20 overflow-y-auto">{updateInfo.body}</div>}
+                      <button
+                        onClick={async () => {
+                          setUpdateState('installing')
+                          try {
+                            const asset = updateInfo.assets?.find((a: any) => a.name.endsWith('.exe'))
+                            if (asset) {
+                              await InstallUpdate(asset.browser_download_url)
+                              setUpdateState('done')
+                            } else {
+                              setUpdateErr('No suitable download found')
+                              setUpdateState('error')
+                            }
+                          } catch (e: any) {
+                            setUpdateErr(e?.message || 'Install failed')
+                            setUpdateState('error')
+                          }
+                        }}
+                        className="px-3 h-7 bg-vscode-accent hover:bg-vscode-accent-hover text-white rounded text-[11px]">
+                        { 'Install Update' }
+                      </button>
+                    </div>
+                  )}
+                  {updateState === 'done' && (
+                    <div className="flex items-center gap-1.5 text-vscode-green"><Check size={12} /> Update installed — restart to apply</div>
+                  )}
+                  {updateState === 'idle' && (
+                    <div className="text-vscode-text-dim text-[11px]">You're up to date</div>
+                  )}
+                  {updateState === 'error' && (
+                    <div className="text-vscode-red text-[11px]">{updateErr || 'Check failed'}</div>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-2 gap-1 mt-3 text-[11px]">
                   {[{ name: 'SSH', ok: true },{ name: 'Telnet', ok: true },{ name: 'RDP', ok: true },{ name: 'VNC', ok: true },{ name: 'FTP', ok: true },{ name: 'SFTP', ok: true },{ name: 'Serial', ok: true },{ name: 'MOSH', ok: true },{ name: 'X11', ok: false }].map(p => (
                     <div key={p.name} className="flex items-center gap-1.5">
@@ -231,8 +346,8 @@ export default function SettingsDialog({ onClose }: Props) {
             </div>
             <div className="flex items-center gap-2">
               <button onClick={() => { cancel(); onClose() }} className="px-3 h-7 text-[12px] text-vscode-text-muted hover:text-vscode-text hover:bg-vscode-hover rounded transition-colors">{t('cancel')}</button>
-              <button onClick={() => { apply(); onClose() }} disabled={!hasChanges}
-                className="px-5 h-7 bg-vscode-accent hover:bg-vscode-accent-hover disabled:opacity-40 disabled:cursor-not-allowed text-white rounded text-[12px] font-medium transition-colors">{t('apply')}</button>
+              <button onClick={() => { apply(); onClose() }}
+                className="px-5 h-7 bg-vscode-accent hover:bg-vscode-accent-hover text-white rounded text-[12px] font-medium transition-colors">{t('close')}</button>
             </div>
           </div>
         </div>

@@ -1,6 +1,8 @@
+import { useState, useEffect } from 'react'
 import { useTabStore } from '../stores/tabStore'
 import { useI18n } from '../lib/i18n'
-import { Wifi, WifiOff, PanelRight } from 'lucide-react'
+import { GetLatency } from '../../wailsjs/go/main/App'
+import { Wifi, WifiOff, Activity } from 'lucide-react'
 
 interface Props {
   onTogglePanel: () => void
@@ -10,6 +12,18 @@ interface Props {
 export default function StatusBar({ onTogglePanel, panelVisible }: Props) {
   const tab = useTabStore(s => s.getActiveTab())
   const { t } = useI18n()
+  const [time, setTime] = useState(new Date())
+  const [latency, setLatency] = useState(0)
+
+  useEffect(() => { const iv = setInterval(() => setTime(new Date()), 60000); return () => clearInterval(iv) }, [])
+
+  useEffect(() => {
+    if (tab?.state !== 'connected') { setLatency(0); return }
+    const iv = setInterval(async () => {
+      try { setLatency(await GetLatency(tab.connId)) } catch { setLatency(0) }
+    }, 5000)
+    return () => clearInterval(iv)
+  }, [tab?.connId, tab?.state])
 
   return (
     <div className="flex items-center h-6 px-2 bg-vscode-status text-white/90 text-[11px] select-none shrink-0">
@@ -29,11 +43,17 @@ export default function StatusBar({ onTogglePanel, panelVisible }: Props) {
       </div>
       <div className="flex-1" />
       <div className="flex items-center gap-3 text-white/70">
-        <button onClick={onTogglePanel} className={`flex items-center gap-1 hover:text-white transition-colors ${panelVisible ? 'text-white' : ''}`}>
-          <PanelRight size={11} />
-          <span>{t('panel')}</span>
-        </button>
-        <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        {/* Monitor info in status bar */}
+        {tab?.state === 'connected' && (
+          <>
+            <span className="flex items-center gap-1">
+              <Activity size={10} />
+              <span>{latency > 0 ? `${latency} ms` : '-- ms'}</span>
+            </span>
+            <span className="text-white/30">|</span>
+          </>
+        )}
+        <span>{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
       </div>
     </div>
   )

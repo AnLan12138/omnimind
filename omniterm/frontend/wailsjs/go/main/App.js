@@ -54,6 +54,10 @@ export function GetConnectionState(arg1) {
   return window['go']['main']['App']['GetConnectionState'](arg1);
 }
 
+export function GetLatency(arg1) {
+  return window['go']['main']['App']['GetLatency'](arg1);
+}
+
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
 }
@@ -78,6 +82,10 @@ export function IsLocked() {
   return window['go']['main']['App']['IsLocked']();
 }
 
+export function LaunchProgram(arg1, arg2) {
+  return window['go']['main']['App']['LaunchProgram'](arg1, arg2);
+}
+
 export function ListFTP(arg1, arg2) {
   return window['go']['main']['App']['ListFTP'](arg1, arg2);
 }
@@ -100,6 +108,14 @@ export function ListSessions() {
 
 export function OpenSFTP(arg1) {
   return window['go']['main']['App']['OpenSFTP'](arg1);
+}
+
+export function PickDownloadDir() {
+  return window['go']['main']['App']['PickDownloadDir']();
+}
+
+export function PickExecutable() {
+  return window['go']['main']['App']['PickExecutable']();
 }
 
 export function RDPSendKeyDown(arg1, arg2, arg3) {
@@ -134,6 +150,10 @@ export function Resize(arg1, arg2, arg3) {
   return window['go']['main']['App']['Resize'](arg1, arg2, arg3);
 }
 
+export function SFTPCreateFile(arg1, arg2) {
+  return window['go']['main']['App']['SFTPCreateFile'](arg1, arg2);
+}
+
 export function SFTPDownload(arg1, arg2, arg3) {
   return window['go']['main']['App']['SFTPDownload'](arg1, arg2, arg3);
 }
@@ -154,6 +174,10 @@ export function SFTPUpload(arg1, arg2, arg3) {
   return window['go']['main']['App']['SFTPUpload'](arg1, arg2, arg3);
 }
 
+export function SFTPUploadData(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SFTPUploadData'](arg1, arg2, arg3);
+}
+
 export function SaveFolder(arg1) {
   return window['go']['main']['App']['SaveFolder'](arg1);
 }
@@ -166,24 +190,16 @@ export function Send(arg1, arg2) {
   return window['go']['main']['App']['Send'](arg1, arg2);
 }
 
+export function SendPassword(arg1, arg2) {
+  return window['go']['main']['App']['SendPassword'](arg1, arg2);
+}
+
 export function SetMasterPassword(arg1) {
   return window['go']['main']['App']['SetMasterPassword'](arg1);
 }
 
-export function StartLocalForward(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['StartLocalForward'](arg1, arg2, arg3, arg4);
-}
-
 export function StartRecording(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['StartRecording'](arg1, arg2, arg3, arg4);
-}
-
-export function StartRemoteForward(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['StartRemoteForward'](arg1, arg2, arg3, arg4);
-}
-
-export function StartSOCKS5Proxy(arg1, arg2) {
-  return window['go']['main']['App']['StartSOCKS5Proxy'](arg1, arg2);
 }
 
 export function StopRecording(arg1) {
@@ -200,6 +216,10 @@ export function VNCFrameSize(arg1) {
 
 export function VNCRequestUpdate(arg1) {
   return window['go']['main']['App']['VNCRequestUpdate'](arg1);
+}
+
+export function VNCSendClipboard(arg1, arg2) {
+  return window['go']['main']['App']['VNCSendClipboard'](arg1, arg2);
 }
 
 export function VNCSendKey(arg1, arg2, arg3) {

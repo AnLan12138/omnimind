@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
-import { VNCSendPointer, VNCSendKey, VNCRequestUpdate } from '../../wailsjs/go/main/App'
+import { VNCSendPointer, VNCSendKey, VNCRequestUpdate, VNCSendClipboard } from '../../wailsjs/go/main/App'
 
 interface FrameRect {
   X: number; Y: number; Width: number; Height: number
@@ -104,11 +104,26 @@ export default function VNCViewer({ connId, onDisconnect }: Props) {
     // Listen for frame updates from Go
     EventsOn('conn:' + connId + ':data', handleFrame)
 
+    // Listen for remote clipboard (ServerCutText)
+    EventsOn('conn:' + connId + ':clipboard', (text: string) => {
+      navigator.clipboard.writeText(text).catch(() => {})
+    })
+
+    // Handle paste (local → remote)
+    const handlePaste = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData('text')
+      if (text) VNCSendClipboard(connId, text)
+    }
+    canvas.addEventListener('paste', handlePaste)
+    canvas.focus()
+
     // Request initial full update
     VNCRequestUpdate(connId)
 
     return () => {
       EventsOff('conn:' + connId + ':data')
+      EventsOff('conn:' + connId + ':clipboard')
+      canvas.removeEventListener('paste', handlePaste)
     }
   }, [connId])
 

@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -30,6 +34,12 @@ type ActiveConn struct {
 	Recorder *filetransfer.Recorder
 	Ctx      context.Context
 	Cancel   context.CancelFunc
+	Latency  int64 // atomic, last measured RTT in milliseconds
+}
+
+// LatencyProber is implemented by clients that can measure RTT
+type LatencyProber interface {
+	Latency() int64
 }
 
 type App struct {
@@ -214,12 +224,15 @@ func (a *App) Connect(connID string, sess session.Session) error {
 			runtime.EventsEmit(a.ctx, "conn:"+connID+":data", []byte(json))
 		})
 	}
-	if vnc, ok := client.(*vncclient.Client); ok {
-		vnc.OnFrame(func(update *vncclient.FrameUpdate) {
-			b, _ := json.Marshal(update)
-			runtime.EventsEmit(a.ctx, "conn:"+connID+":data", b)
-		})
-	}
+		if vnc, ok := client.(*vncclient.Client); ok {
+			vnc.OnFrame(func(update *vncclient.FrameUpdate) {
+				b, _ := json.Marshal(update)
+				runtime.EventsEmit(a.ctx, "conn:"+connID+":data", b)
+			})
+			vnc.OnClipboard(func(text string) {
+				runtime.EventsEmit(a.ctx, "conn:"+connID+":clipboard", text)
+			})
+		}
 
 	// State callback with auto-reconnect for unexpected disconnects
 	client.OnState(func(state protocol.ConnState) {
@@ -238,10 +251,6 @@ func (a *App) Connect(connID string, sess session.Session) error {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := client.Connect(ctx, cfg); err != nil {
-		cancel()
-		return err
-	}
 
 	a.connsMu.Lock()
 	a.conns[connID] = &ActiveConn{
@@ -252,7 +261,46 @@ func (a *App) Connect(connID string, sess session.Session) error {
 	}
 	a.connsMu.Unlock()
 
+	if err := client.Connect(ctx, cfg); err != nil {
+		cancel()
+		return err
+	}
+
+	// Start latency polling for protocols that support it
+	if lp, ok := client.(LatencyProber); ok {
+		go a.pollLatency(ctx, connID, lp)
+	}
+
 	return nil
+}
+
+func (a *App) pollLatency(ctx context.Context, connID string, lp LatencyProber) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.connsMu.RLock()
+			ac := a.conns[connID]
+			a.connsMu.RUnlock()
+			if ac != nil {
+				atomic.StoreInt64(&ac.Latency, lp.Latency())
+			}
+		}
+	}
+}
+
+// GetLatency returns the last measured latency in milliseconds for a connection
+func (a *App) GetLatency(connID string) int64 {
+	a.connsMu.RLock()
+	ac := a.conns[connID]
+	a.connsMu.RUnlock()
+	if ac == nil {
+		return 0
+	}
+	return atomic.LoadInt64(&ac.Latency)
 }
 
 func (a *App) autoReconnect(connID string, sess session.Session, client protocol.ProtocolClient) {
@@ -374,44 +422,6 @@ func (a *App) GetConnectionState(connID string) string {
 	return ac.Client.State().String()
 }
 
-// --- SSH Tunnels ---
-
-func (a *App) StartLocalForward(connID string, localPort int, remoteHost string, remotePort int) error {
-	ac := a.getConn(connID)
-	if ac == nil {
-		return fmt.Errorf("connection not found")
-	}
-	sshClient, ok := ac.Client.(*sshclient.Client)
-	if !ok {
-		return fmt.Errorf("tunnels only for SSH connections")
-	}
-	return sshClient.StartLocalForward(localPort, remoteHost, remotePort)
-}
-
-func (a *App) StartRemoteForward(connID string, remotePort int, localHost string, localPort int) error {
-	ac := a.getConn(connID)
-	if ac == nil {
-		return fmt.Errorf("connection not found")
-	}
-	sshClient, ok := ac.Client.(*sshclient.Client)
-	if !ok {
-		return fmt.Errorf("tunnels only for SSH connections")
-	}
-	return sshClient.StartRemoteForward(remotePort, localHost, localPort)
-}
-
-func (a *App) StartSOCKS5Proxy(connID string, port int) error {
-	ac := a.getConn(connID)
-	if ac == nil {
-		return fmt.Errorf("connection not found")
-	}
-	sshClient, ok := ac.Client.(*sshclient.Client)
-	if !ok {
-		return fmt.Errorf("tunnels only for SSH connections")
-	}
-	return sshClient.StartSOCKS5(port)
-}
-
 func (a *App) getConn(connID string) *ActiveConn {
 	a.connsMu.RLock()
 	defer a.connsMu.RUnlock()
@@ -507,6 +517,15 @@ func (a *App) VNCFrameSize(connID string) (uint16, uint16, error) {
 	return w, h, nil
 }
 
+// VNCSendClipboard sends local clipboard text to the VNC server
+func (a *App) VNCSendClipboard(connID string, text string) error {
+	ac := a.getConn(connID)
+	if ac == nil { return fmt.Errorf("not connected") }
+	vnc, ok := ac.Client.(*vncclient.Client)
+	if !ok { return fmt.Errorf("not a VNC connection") }
+	return vnc.SendClipboard(text)
+}
+
 // --- FTP File Operations ---
 
 func (a *App) ListFTP(connID string, path string) ([]ftpclient.FileInfo, error) {
@@ -548,6 +567,14 @@ func (a *App) getFTPClient(connID string) (*ftpclient.Client, error) {
 	return ftp, nil
 }
 
+func (a *App) SendPassword(connID string, password string) {
+	ac := a.getConn(connID)
+	if ac == nil { return }
+	if s, ok := ac.Client.(*sshclient.Client); ok {
+		s.SendPassword(password)
+	}
+}
+
 // --- SFTP Operations ---
 
 func (a *App) OpenSFTP(connID string) error {
@@ -581,51 +608,67 @@ func (a *App) OpenSFTP(connID string) error {
 }
 
 func (a *App) ListSFTP(connID string, path string) ([]filetransfer.FileInfo, error) {
+	// Auto-open SFTP if not already open
 	ac := a.getSFTPConn(connID)
 	if ac == nil {
-		return nil, fmt.Errorf("SFTP not open")
+		if err := a.OpenSFTP(connID); err != nil {
+			return nil, fmt.Errorf("open SFTP: %w", err)
+		}
+		ac = a.getSFTPConn(connID)
+		if ac == nil {
+			return nil, fmt.Errorf("SFTP not open")
+		}
 	}
 	return ac.SFTP.ListDir(path)
 }
 
 func (a *App) SFTPDownload(connID string, remotePath string, localPath string) error {
-	ac := a.getSFTPConn(connID)
-	if ac == nil {
-		return fmt.Errorf("SFTP not open")
-	}
+	ac := a.ensureSFTP(connID); if ac == nil { return fmt.Errorf("SFTP not open") }
 	return ac.SFTP.Download(remotePath, localPath, nil)
 }
-
 func (a *App) SFTPUpload(connID string, localPath string, remotePath string) error {
-	ac := a.getSFTPConn(connID)
-	if ac == nil {
-		return fmt.Errorf("SFTP not open")
-	}
+	ac := a.ensureSFTP(connID); if ac == nil { return fmt.Errorf("SFTP not open") }
 	return ac.SFTP.Upload(localPath, remotePath, nil)
 }
-
 func (a *App) SFTPMkdir(connID string, path string) error {
-	ac := a.getSFTPConn(connID)
-	if ac == nil {
-		return fmt.Errorf("SFTP not open")
-	}
+	ac := a.ensureSFTP(connID); if ac == nil { return fmt.Errorf("SFTP not open") }
 	return ac.SFTP.Mkdir(path)
+}
+func (a *App) SFTPCreateFile(connID string, path string) error {
+	ac := a.ensureSFTP(connID); if ac == nil { return fmt.Errorf("SFTP not open") }
+	return ac.SFTP.CreateEmpty(path)
+}
+
+func (a *App) PickDownloadDir() (string, error) {
+	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择下载保存目录"})
+	if err != nil { return "", err }
+	if dir == "" { return "", fmt.Errorf("未选择目录") }
+	return dir, nil
+}
+
+func (a *App) SFTPUploadData(connID string, remotePath string, data string) error {
+	ac := a.ensureSFTP(connID); if ac == nil { return fmt.Errorf("SFTP not open") }
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil { return fmt.Errorf("decode: %w", err) }
+	return ac.SFTP.UploadData(remotePath, decoded)
 }
 
 func (a *App) SFTPRemove(connID string, path string) error {
-	ac := a.getSFTPConn(connID)
-	if ac == nil {
-		return fmt.Errorf("SFTP not open")
-	}
+	ac := a.ensureSFTP(connID); if ac == nil { return fmt.Errorf("SFTP not open") }
 	return ac.SFTP.Remove(path)
 }
-
 func (a *App) SFTPRename(connID string, oldPath string, newPath string) error {
+	ac := a.ensureSFTP(connID); if ac == nil { return fmt.Errorf("SFTP not open") }
+	return ac.SFTP.Rename(oldPath, newPath)
+}
+
+func (a *App) ensureSFTP(connID string) *ActiveConn {
 	ac := a.getSFTPConn(connID)
 	if ac == nil {
-		return fmt.Errorf("SFTP not open")
+		a.OpenSFTP(connID)
+		return a.getSFTPConn(connID)
 	}
-	return ac.SFTP.Rename(oldPath, newPath)
+	return ac
 }
 
 func (a *App) getSFTPConn(connID string) *ActiveConn {
@@ -693,6 +736,59 @@ func (a *App) InstallUpdate(assetURL string) error {
 	exePath, _ := os.Executable()
 	checker := config.NewUpdateChecker("0.1.0")
 	return checker.DownloadAndReplace(assetURL, exePath)
+}
+
+// --- Extensions / External Tools ---
+
+// LaunchProgram starts an external program with optional arguments.
+func (a *App) LaunchProgram(exePath string, args string) error {
+	if exePath == "" {
+		return fmt.Errorf("no program path configured")
+	}
+	parts := []string{}
+	if args != "" {
+		parts = stringsSplit(args)
+	}
+	cmd := exec.Command(exePath, parts...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Start()
+}
+
+func stringsSplit(s string) []string {
+	parts := []string{}
+	current := ""
+	inQuote := false
+	for _, c := range s {
+		if c == '"' {
+			inQuote = !inQuote
+		} else if c == ' ' && !inQuote {
+			if current != "" {
+				parts = append(parts, current)
+				current = ""
+			}
+		} else {
+			current += string(c)
+		}
+	}
+	if current != "" {
+		parts = append(parts, current)
+	}
+	return parts
+}
+
+// PickExecutable opens a file dialog to select an .exe file.
+func (a *App) PickExecutable() (string, error) {
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Program",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Executable (*.exe)", Pattern: "*.exe"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // --- Utility ---

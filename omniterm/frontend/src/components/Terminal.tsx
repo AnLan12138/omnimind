@@ -8,6 +8,7 @@ import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import { useTabStore } from '../stores/tabStore'
 import { useThemeStore } from '../stores/themeStore'
 import { useConfigStore } from '../stores/configStore'
+import { useBroadcastStore } from '../stores/broadcastStore'
 import { useRecordingStore } from '../stores/recordingStore'
 
 interface Props { connId: string; onDisconnect: (connId: string) => void }
@@ -26,8 +27,14 @@ export default function Terminal({ connId, onDisconnect }: Props) {
 
   const copy = useCallback(() => {
     const sel = xtermRef.current?.getSelection()
-    if (sel) navigator.clipboard.writeText(sel).catch(() => {})
-  }, [])
+    if (!sel) return
+    navigator.clipboard.writeText(sel).catch(() => {})
+    // Send OSC 52 to remote so programs like vim/tmux can receive clipboard
+    try {
+      const b64 = btoa(unescape(encodeURIComponent(sel)))
+      window.go.main.App.Send(connId, `\x1b]52;c;${b64}\x07`)
+    } catch {}
+  }, [connId])
 
   const paste = useCallback(async () => {
     try { const t = await navigator.clipboard.readText(); if (t) window.go.main.App.Send(connId, t) } catch {}
@@ -62,10 +69,40 @@ export default function Terminal({ connId, onDisconnect }: Props) {
     const uni = new Unicode11Addon(); xterm.loadAddon(uni); xterm.unicode.activeVersion = '11'
 
     xterm.open(containerRef.current); fit.fit()
+
+    // OSC 52 clipboard — intercept remote clipboard data
+    try {
+      xterm.parser.registerOscHandler(52, (data: string) => {
+        const semi = data.indexOf(';')
+        if (semi > 0) {
+          try {
+            const text = decodeURIComponent(escape(atob(data.slice(semi + 1))))
+            navigator.clipboard.writeText(text).catch(() => {})
+          } catch {}
+        }
+        return false
+      })
+    } catch {}
+
+    // Auto-focus if this is the active tab
+    const tab = useTabStore.getState().tabs.find(t => t.connId === connId)
+    if (tab?.active) { setTimeout(() => xterm.focus(), 100) }
     xterm.onData(d => {
       const rec = useRecordingStore.getState()
       if (rec.active) rec.feed(d)
-      window.go.main.App.Send(connId, d)
+      const bc = useBroadcastStore.getState()
+      if (bc.active) {
+        if (!bc.included.has(connId)) return // excluded: ignore input
+        const targets = Array.from(bc.included)
+        const send = async () => {
+          for (const cid of targets) {
+            await window.go.main.App.Send(cid, d)
+          }
+        }
+        send()
+      } else {
+        window.go.main.App.Send(connId, d)
+      }
     })
     xterm.onSelectionChange(() => { const s = xterm.getSelection(); if (s) navigator.clipboard.writeText(s).catch(() => {}) })
 
@@ -92,8 +129,16 @@ export default function Terminal({ connId, onDisconnect }: Props) {
     EventsOn('conn:' + connId + ':data', (d: string | Uint8Array) => {
       xterm.write(typeof d === 'string' ? d : new TextDecoder().decode(d))
     })
-    EventsOn('conn:' + connId + ':state', (s: string) => { updateTabState(connId, s) })
-    EventsOn('conn:' + connId + ':error', (e: string) => { console.error(`[${connId}]`, e) })
+    EventsOn('conn:' + connId + ':state', (s: string) => {
+      updateTabState(connId, s)
+      if (s === 'connected') { setTimeout(() => xterm.focus(), 200) }
+    })
+    EventsOn('conn:' + connId + ':error', (e: string) => {
+      console.error(`[${connId}]`, e)
+      if (e.includes('handshake') || e.includes('auth')) {
+        setTimeout(() => xterm.write('\r\nPassword: '), 300)
+      }
+    })
 
     xterm.attachCustomKeyEventHandler(e => {
       if (e.ctrlKey && e.shiftKey && e.key === 'C') { copy(); return false }

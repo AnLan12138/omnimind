@@ -196,6 +196,19 @@ func (s *SFTPClient) Mkdir(path string) error {
 	return s.client.MkdirAll(path)
 }
 
+func (s *SFTPClient) CreateEmpty(path string) error {
+	f, err := s.client.Create(path)
+	if err != nil { return err }
+	return f.Close()
+}
+
+func (s *SFTPClient) UploadData(remotePath string, data []byte) error {
+	f, err := s.client.Create(remotePath)
+	if err != nil { return err }
+	if _, err := f.Write(data); err != nil { f.Close(); return err }
+	return f.Close()
+}
+
 func (s *SFTPClient) Remove(path string) error {
 	info, err := s.client.Stat(path)
 	if err != nil {

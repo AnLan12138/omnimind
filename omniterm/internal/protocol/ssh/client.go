@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -24,25 +25,47 @@ type Client struct {
 	session *ssh.Session
 	stdin   io.WriteCloser
 	stdout  io.Reader
+	stderr  io.Reader
 
 	state     protocol.ConnState
 	stateMu   sync.RWMutex
 	cancel    context.CancelFunc
+	latencyNs int64 // atomic, last measured RTT in nanoseconds
 
-	onData  protocol.DataCallback
-	onState protocol.StateCallback
-	onError protocol.ErrorCallback
+	onData          protocol.DataCallback
+	onState         protocol.StateCallback
+	onError         protocol.ErrorCallback
+	interactivePipe chan string
+	authBuf         string
+	authCtx         context.Context
 }
 
 func New() *Client {
-	return &Client{state: protocol.StateDisconnected}
+	return &Client{
+		state:           protocol.StateDisconnected,
+		interactivePipe: make(chan string, 10),
+	}
+}
+
+func (c *Client) SendPassword(pw string) {
+	c.cfg.Password = pw
+	// Auto-reconnect with password
+	go func() {
+		if c.conn != nil {
+			c.conn.Close()
+		}
+		// Brief delay to let disconnect settle
+		time.Sleep(100 * time.Millisecond)
+		if err := c.Connect(c.authCtx, c.cfg); err != nil {
+			c.setError(fmt.Errorf("reconnect failed: %w", err))
+		}
+	}()
 }
 
 func (c *Client) Connect(ctx context.Context, cfg protocol.ConnConfig) error {
 	c.cfg = cfg
+	c.authCtx = ctx
 	c.setState(protocol.StateConnecting)
-
-	authMethods := c.buildAuthMethods()
 
 	hostKeyCallback, err := c.buildHostKeyCallback()
 	if err != nil {
@@ -50,18 +73,20 @@ func (c *Client) Connect(ctx context.Context, cfg protocol.ConnConfig) error {
 		return err
 	}
 
+	if cfg.KeepAliveSec <= 0 {
+		cfg.KeepAliveSec = 30
+	}
+
+	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+
+	authMethods := c.buildAuthMethods()
+
 	sshCfg := &ssh.ClientConfig{
 		User:            cfg.Username,
 		Auth:            authMethods,
 		HostKeyCallback: hostKeyCallback,
 		Timeout:         15 * time.Second,
 	}
-
-	if cfg.KeepAliveSec <= 0 {
-		cfg.KeepAliveSec = 30
-	}
-
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 
 	var conn net.Conn
 	d := net.Dialer{Timeout: 15 * time.Second}
@@ -130,8 +155,13 @@ func (c *Client) Connect(ctx context.Context, cfg protocol.ConnConfig) error {
 		return err
 	}
 
-	// Merge stderr into stdout
-	session.StderrPipe()
+	c.stderr, err = session.StderrPipe()
+	if err != nil {
+		session.Close()
+		c.conn.Close()
+		c.setError(fmt.Errorf("stderr pipe: %w", err))
+		return err
+	}
 
 	if err := session.Shell(); err != nil {
 		session.Close()
@@ -144,6 +174,7 @@ func (c *Client) Connect(ctx context.Context, cfg protocol.ConnConfig) error {
 	c.cancel = cancel
 
 	go c.readLoop(ctx)
+	go c.readStderrLoop(ctx)
 	go c.keepAlive(ctx, time.Duration(cfg.KeepAliveSec)*time.Second)
 	go c.waitSession(ctx)
 
@@ -166,6 +197,27 @@ func (c *Client) Disconnect() error {
 }
 
 func (c *Client) Send(data []byte) error {
+	// If not yet connected (no stdin), treat input as password and auto-reconnect
+	if c.stdin == nil {
+		for _, b := range data {
+			if b == '\r' || b == '\n' {
+				if c.onData != nil { c.onData([]byte("\r\n")) }
+				if c.authBuf != "" {
+					c.SendPassword(c.authBuf)
+					c.authBuf = ""
+				}
+			} else if b == 127 || b == '\b' {
+				if len(c.authBuf) > 0 {
+					c.authBuf = c.authBuf[:len(c.authBuf)-1]
+					if c.onData != nil { c.onData([]byte("\b \b")) }
+				}
+			} else if b >= 32 {
+				c.authBuf += string(b)
+				if c.onData != nil { c.onData([]byte("*")) }
+			}
+		}
+		return nil
+	}
 	if c.stdin == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -241,191 +293,35 @@ func (c *Client) GetSFTPClient() (*ssh.Client, error) {
 	return c.conn, nil
 }
 
-// StartLocalForward listens on local port and forwards to remote host:port.
-func (c *Client) StartLocalForward(localPort int, remoteHost string, remotePort int) error {
-	if c.conn == nil {
-		return fmt.Errorf("not connected")
-	}
-
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
-	if err != nil {
-		return fmt.Errorf("local listen: %w", err)
-	}
-
-	go func() {
-		for {
-			localConn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer localConn.Close()
-				remoteAddr := fmt.Sprintf("%s:%d", remoteHost, remotePort)
-				remoteConn, err := c.conn.Dial("tcp", remoteAddr)
-				if err != nil {
-					return
-				}
-				defer remoteConn.Close()
-
-				go func() {
-					io.Copy(remoteConn, localConn)
-				}()
-				io.Copy(localConn, remoteConn)
-			}()
-		}
-	}()
-
-	runtimeLog("Local forward started: 127.0.0.1:%d -> %s:%d", localPort, remoteHost, remotePort)
-	return nil
-}
-
-// StartRemoteForward listens on remote port and forwards to local host:port.
-func (c *Client) StartRemoteForward(remotePort int, localHost string, localPort int) error {
-	if c.conn == nil {
-		return fmt.Errorf("not connected")
-	}
-
-	listener, err := c.conn.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", remotePort))
-	if err != nil {
-		return fmt.Errorf("remote listen: %w", err)
-	}
-
-	go func() {
-		for {
-			remoteConn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer remoteConn.Close()
-				localAddr := fmt.Sprintf("%s:%d", localHost, localPort)
-				localConn, err := net.Dial("tcp", localAddr)
-				if err != nil {
-					return
-				}
-				defer localConn.Close()
-
-				go func() {
-					io.Copy(localConn, remoteConn)
-				}()
-				io.Copy(remoteConn, localConn)
-			}()
-		}
-	}()
-
-	runtimeLog("Remote forward started: remote 0.0.0.0:%d -> %s:%d", remotePort, localHost, localPort)
-	return nil
-}
-
-// StartSOCKS5 starts a SOCKS5 proxy on the given port.
-func (c *Client) StartSOCKS5(port int) error {
-	if c.conn == nil {
-		return fmt.Errorf("not connected")
-	}
-
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return fmt.Errorf("SOCKS5 listen: %w", err)
-	}
-
-	go func() {
-		for {
-			clientConn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go c.handleSOCKS5(clientConn)
-		}
-	}()
-
-	runtimeLog("SOCKS5 proxy started on 127.0.0.1:%d", port)
-	return nil
-}
-
-func (c *Client) handleSOCKS5(clientConn net.Conn) {
-	defer clientConn.Close()
-
-	buf := make([]byte, 256)
-
-	// SOCKS5 handshake
-	if _, err := io.ReadFull(clientConn, buf[:2]); err != nil {
-		return
-	}
-	nmethods := int(buf[1])
-	if _, err := io.ReadFull(clientConn, buf[:nmethods]); err != nil {
-		return
-	}
-	// No auth
-	clientConn.Write([]byte{0x05, 0x00})
-
-	// Request
-	if _, err := io.ReadFull(clientConn, buf[:4]); err != nil {
-		return
-	}
-	addrType := buf[3]
-
-	var targetAddr string
-	switch addrType {
-	case 0x01: // IPv4
-		if _, err := io.ReadFull(clientConn, buf[:4]); err != nil {
-			return
-		}
-		targetAddr = fmt.Sprintf("%d.%d.%d.%d", buf[0], buf[1], buf[2], buf[3])
-	case 0x03: // Domain
-		if _, err := io.ReadFull(clientConn, buf[:1]); err != nil {
-			return
-		}
-		domainLen := int(buf[0])
-		if _, err := io.ReadFull(clientConn, buf[:domainLen]); err != nil {
-			return
-		}
-		targetAddr = string(buf[:domainLen])
-	case 0x04: // IPv6
-		if _, err := io.ReadFull(clientConn, buf[:16]); err != nil {
-			return
-		}
-		targetAddr = fmt.Sprintf("[%x:%x:%x:%x:%x:%x:%x:%x]",
-			buf[0:2], buf[2:4], buf[4:6], buf[6:8],
-			buf[8:10], buf[10:12], buf[12:14], buf[14:16])
-	default:
-		return
-	}
-
-	// Port
-	if _, err := io.ReadFull(clientConn, buf[:2]); err != nil {
-		return
-	}
-	targetPort := int(buf[0])<<8 | int(buf[1])
-
-	// Connect to target via SSH
-	remoteConn, err := c.conn.Dial("tcp", fmt.Sprintf("%s:%d", targetAddr, targetPort))
-	if err != nil {
-		// Reply with error
-		clientConn.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		return
-	}
-	defer remoteConn.Close()
-
-	// Reply success
-	clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-
-	go func() { io.Copy(remoteConn, clientConn) }()
-	io.Copy(clientConn, remoteConn)
-}
-
-func runtimeLog(format string, args ...interface{}) {
-	_ = fmt.Sprintf(format, args...)
-	// In production: pass back to UI via callback
-}
 
 // --- private ---
 
 func (c *Client) buildAuthMethods() []ssh.AuthMethod {
 	var methods []ssh.AuthMethod
 
-	if c.cfg.Password != "" {
-		methods = append(methods, ssh.Password(c.cfg.Password))
-	}
+	// Use RetryableAuthMethod + PasswordCallback so the SSH library:
+	// 1. Sends "none" auth first
+	// 2. Waits for server's supported methods list
+	// 3. Only THEN calls the callback to get the password
+	// This matches OpenSSH's behavior exactly.
+	methods = append(methods, ssh.RetryableAuthMethod(ssh.PasswordCallback(func() (string, error) {
+		password := c.cfg.Password
+		if password != "" {
+			return password, nil
+		}
+		// No password stored - prompt user in terminal
+		if c.onData != nil {
+			c.onData([]byte("\r\n" + c.cfg.Username + "@" + c.cfg.Host + "'s password: "))
+		}
+		// Wait for user to type password
+		select {
+		case pw := <-c.interactivePipe:
+			c.cfg.Password = pw
+			return pw, nil
+		case <-c.authCtx.Done():
+			return "", fmt.Errorf("auth cancelled")
+		}
+	}), 5)) // allow 5 retries
 
 	if c.cfg.PrivateKeyPath != "" {
 		key, err := os.ReadFile(c.cfg.PrivateKeyPath)
@@ -532,6 +428,26 @@ func (c *Client) readLoop(ctx context.Context) {
 	}
 }
 
+func (c *Client) readStderrLoop(ctx context.Context) {
+	buf := make([]byte, 16*1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			n, err := c.stderr.Read(buf)
+			if err != nil {
+				return
+			}
+			if n > 0 && c.onData != nil {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				c.onData(data)
+			}
+		}
+	}
+}
+
 func (c *Client) keepAlive(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -541,10 +457,17 @@ func (c *Client) keepAlive(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			if c.conn != nil {
+				start := time.Now()
 				c.conn.SendRequest("keepalive@openssh.com", true, nil)
+				atomic.StoreInt64(&c.latencyNs, int64(time.Since(start)))
 			}
 		}
 	}
+}
+
+// Latency returns the last measured round-trip time in milliseconds
+func (c *Client) Latency() int64 {
+	return atomic.LoadInt64(&c.latencyNs) / 1e6
 }
 
 func (c *Client) waitSession(ctx context.Context) {

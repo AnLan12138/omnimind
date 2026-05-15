@@ -1,10 +1,13 @@
 package vnc
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"crypto/des"
 	"encoding/binary"
 	"fmt"
+	"image/jpeg"
 	"io"
 	"net"
 	"sync"
@@ -45,13 +48,16 @@ type Client struct {
 	state   protocol.ConnState
 	stateMu sync.RWMutex
 
-	onData  protocol.DataCallback
-	onState protocol.StateCallback
-	onError protocol.ErrorCallback
-	onFrame func(*FrameUpdate)
+	onData      protocol.DataCallback
+	onState     protocol.StateCallback
+	onError     protocol.ErrorCallback
+	onFrame     func(*FrameUpdate)
+	onClipboard func(string) // called when server sends clipboard text
 
 	cancel context.CancelFunc
 }
+
+func (c *Client) OnClipboard(cb func(string)) { c.onClipboard = cb }
 
 func New() *Client {
 	return &Client{state: protocol.StateDisconnected}
@@ -149,7 +155,24 @@ func (c *Client) OnState(cb protocol.StateCallback) { c.onState = cb }
 func (c *Client) OnError(cb protocol.ErrorCallback) { c.onError = cb }
 func (c *Client) OnFrame(cb func(*FrameUpdate))     { c.onFrame = cb }
 func (c *Client) Features() protocol.Features {
-	return protocol.Features{TerminalType: "canvas", SupportsSFTP: false, SupportsClipboard: false, SupportsResize: false, SupportsRecording: false, SupportsFilePanel: false}
+	return protocol.Features{TerminalType: "canvas", SupportsSFTP: false, SupportsClipboard: true, SupportsResize: false, SupportsRecording: false, SupportsFilePanel: false}
+}
+
+// SendClipboard sends local clipboard text to the VNC server (ClientCutText)
+func (c *Client) SendClipboard(text string) error {
+	if c.conn == nil {
+		return fmt.Errorf("not connected")
+	}
+	data := []byte(text)
+	buf := make([]byte, 8+len(data))
+	buf[0] = 6 // ClientCutText message type
+	buf[4] = byte(len(data) >> 24)
+	buf[5] = byte(len(data) >> 16)
+	buf[6] = byte(len(data) >> 8)
+	buf[7] = byte(len(data))
+	copy(buf[8:], data)
+	_, err := c.conn.Write(buf)
+	return err
 }
 func (c *Client) FrameSize() (uint16, uint16) { return c.width, c.height }
 
@@ -245,7 +268,13 @@ func (c *Client) readLoop(ctx context.Context) {
 			skip := make([]byte, 7)
 			io.ReadFull(c.conn, skip)
 			l := int(binary.BigEndian.Uint32(skip[3:7]))
-			if l > 0 { io.ReadFull(c.conn, make([]byte, l)) }
+			if l > 0 {
+				text := make([]byte, l)
+				io.ReadFull(c.conn, text)
+				if c.onClipboard != nil {
+					c.onClipboard(string(text))
+				}
+			}
 		default:
 		}
 	}
@@ -277,9 +306,9 @@ func (c *Client) handleFBUpdate() {
 			io.ReadFull(c.conn, cr[:])
 			r.Data = cr[:]
 		case encHextile:
-			r.Data = c.readHextileSimple(r.Width, r.Height)
+			r.Data = c.readHextile(r.Width, r.Height)
 		case encTight:
-			r.Data = c.readTightSimple(r.Width, r.Height)
+			r.Data = c.readTight(r.Width, r.Height)
 		case encDesktopSizePseudo:
 			c.width = r.Width; c.height = r.Height
 		default:
@@ -292,44 +321,338 @@ func (c *Client) handleFBUpdate() {
 	c.sendFBUpdateReq(true, 0, 0, c.width, c.height)
 }
 
-func (c *Client) readHextileSimple(w, h uint16) []byte {
-	// Simplified: read tiles as raw blocks
+func (c *Client) readHextile(w, h uint16) []byte {
 	data := make([]byte, int(w)*int(h)*4)
+	bg := make([]byte, 4) // persistent background colour (initialised black)
 	for y := uint16(0); y < h; y += 16 {
 		for x := uint16(0); x < w; x += 16 {
 			var flags [1]byte
 			io.ReadFull(c.conn, flags[:])
 			tw, th := minU16(16, w-x), minU16(16, h-y)
-			tileSize := int(tw) * int(th) * 4
 
-			if flags[0]&1 != 0 { // Raw tile
-				io.ReadFull(c.conn, make([]byte, tileSize))
-			} else if flags[0]&2 != 0 { // Solid color
-				io.ReadFull(c.conn, make([]byte, 4))
-			} else if flags[0]&4 != 0 { // Packed palette
-				nColors := make([]byte, 1)
-				io.ReadFull(c.conn, nColors)
-				colors := int(nColors[0]) + 1
-				io.ReadFull(c.conn, make([]byte, colors*4))
-				bpp := 1; if colors > 2 { bpp = 2 }; if colors > 4 { bpp = 4 }; if colors > 16 { bpp = 8 }
-				rowBytes := (int(tw)*bpp + 7) / 8
-				io.ReadFull(c.conn, make([]byte, rowBytes*int(th)))
-			} else if flags[0]&8 != 0 { // Plain RLE
-				io.ReadFull(c.conn, make([]byte, tileSize+int(th)))
-			} else if flags[0]&16 != 0 { // Palette RLE
-				nColors := make([]byte, 1)
-				io.ReadFull(c.conn, nColors)
-				io.ReadFull(c.conn, make([]byte, (int(nColors[0])+1)*4+tileSize))
+			if flags[0]&1 != 0 { // Raw — tile is raw BGRA pixels
+				pixels := make([]byte, int(tw)*int(th)*4)
+				io.ReadFull(c.conn, pixels)
+				copyTile(data, w, x, y, tw, th, pixels)
+				continue
+			}
+
+			if flags[0]&2 != 0 { // BackgroundSpecified — read new bg colour
+				io.ReadFull(c.conn, bg)
+			}
+			fillRect(data, w, x, y, tw, th, bg)
+
+			if flags[0]&8 == 0 { // no subrects
+				continue
+			}
+
+			var nSub [1]byte
+			io.ReadFull(c.conn, nSub[:])
+			fg := make([]byte, 4)
+			if flags[0]&16 != 0 { // SubrectsColoured
+				for s := byte(0); s < nSub[0]; s++ {
+					var color, posSize [4]byte
+					io.ReadFull(c.conn, color[:])
+					io.ReadFull(c.conn, posSize[:2])
+					sx := uint16(posSize[0] >> 4)
+					sy := uint16(posSize[0] & 0x0F)
+					sw := uint16((posSize[1] >> 4) + 1)
+					sh := uint16((posSize[1] & 0x0F) + 1)
+					fillRect(data, w, x+sx, y+sy, minU16(sw, tw-sx), minU16(sh, th-sy), color[:])
+				}
 			} else {
-				io.ReadFull(c.conn, make([]byte, tileSize))
+				if flags[0]&4 != 0 { // ForegroundSpecified
+					io.ReadFull(c.conn, fg)
+				}
+				for s := byte(0); s < nSub[0]; s++ {
+					var posSize [2]byte
+					io.ReadFull(c.conn, posSize[:])
+					sx := uint16(posSize[0] >> 4)
+					sy := uint16(posSize[0] & 0x0F)
+					sw := uint16((posSize[1] >> 4) + 1)
+					sh := uint16((posSize[1] & 0x0F) + 1)
+					fillRect(data, w, x+sx, y+sy, minU16(sw, tw-sx), minU16(sh, th-sy), fg)
+				}
 			}
 		}
 	}
 	return data
 }
 
-func (c *Client) readTightSimple(w, h uint16) []byte {
-	return make([]byte, int(w)*int(h)*4)
+func (c *Client) readTight(w, h uint16) []byte {
+	var cc [1]byte
+	io.ReadFull(c.conn, cc[:])
+	compType := cc[0] & 0x0F
+	// resetStreams := cc[0] >> 4 — handled per-rect with fresh zlib
+
+	switch compType {
+	case 0:
+		return c.readTightBasic(w, h)
+	case 8:
+		return c.readTightFill(w, h)
+	case 9:
+		return c.readTightJPEG(w, h)
+	default:
+		return make([]byte, int(w)*int(h)*4)
+	}
+}
+
+func (c *Client) readTightFill(w, h uint16) []byte {
+	var rgb [3]byte
+	io.ReadFull(c.conn, rgb[:])
+	data := make([]byte, int(w)*int(h)*4)
+	for i := 0; i < len(data); i += 4 {
+		data[i] = rgb[2]   // B
+		data[i+1] = rgb[1] // G
+		data[i+2] = rgb[0] // R
+		data[i+3] = 255
+	}
+	return data
+}
+
+func (c *Client) readTightJPEG(w, h uint16) []byte {
+	jpegLen := c.readCompactLen()
+	jpegData := make([]byte, jpegLen)
+	io.ReadFull(c.conn, jpegData)
+	img, err := jpeg.Decode(bytes.NewReader(jpegData))
+	if err != nil {
+		return make([]byte, int(w)*int(h)*4)
+	}
+	bounds := img.Bounds()
+	data := make([]byte, int(w)*int(h)*4)
+	iw, ih := bounds.Dx(), bounds.Dy()
+	for y := 0; y < ih && int(uint16(y)) < int(h); y++ {
+		for x := 0; x < iw && int(uint16(x)) < int(w); x++ {
+			r, g, b, a := img.At(x+bounds.Min.X, y+bounds.Min.Y).RGBA()
+			off := (y*int(w) + x) * 4
+			data[off] = byte(b >> 8)
+			data[off+1] = byte(g >> 8)
+			data[off+2] = byte(r >> 8)
+			data[off+3] = byte(a >> 8)
+		}
+	}
+	return data
+}
+
+func (c *Client) readTightBasic(w, h uint16) []byte {
+	clen := c.readCompactLen()
+	rowSizeRGB := int(w) * 3
+	rawLen := rowSizeRGB*int(h) + int(h) // pixels (RGB) + filter bytes
+	if clen == 0 {
+		return make([]byte, int(w)*int(h)*4)
+	}
+
+	var buf []byte
+	if clen < rawLen {
+		compressed := make([]byte, clen)
+		io.ReadFull(c.conn, compressed)
+		r, err := zlib.NewReader(bytes.NewReader(compressed))
+		if err != nil {
+			return make([]byte, int(w)*int(h)*4)
+		}
+		defer r.Close()
+		buf = make([]byte, rawLen)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return make([]byte, int(w)*int(h)*4)
+		}
+	} else {
+		// data may be rawLen or could differ; clamp to what was actually sent
+		buf = make([]byte, clen)
+		io.ReadFull(c.conn, buf)
+	}
+
+	out := make([]byte, int(w)*int(h)*4)
+	pos := 0
+	prevRow := out[:int(w)*4] // pointer to first decoded BGRA row
+
+	for y := uint16(0); y < h; y++ {
+		if pos >= len(buf) {
+			break
+		}
+		filter := buf[pos]
+		pos++
+		rowStart := int(y) * int(w) * 4
+
+		switch filter {
+		case 0: // Copy — raw RGB pixels, 3 bytes each
+			remaining := len(buf) - pos
+			needed := int(w) * 3
+			if remaining < needed {
+				needed = remaining
+			}
+			for x := 0; x < int(w) && pos+2 < len(buf); x++ {
+				out[rowStart+x*4] = buf[pos+2]   // B
+				out[rowStart+x*4+1] = buf[pos+1] // G
+				out[rowStart+x*4+2] = buf[pos]   // R
+				out[rowStart+x*4+3] = 255
+				pos += 3
+			}
+		case 1: // Palette
+			if pos >= len(buf) {
+				break
+			}
+			nColors := int(buf[pos]) + 1
+			pos++
+			palette := make([][3]byte, nColors)
+			for i := 0; i < nColors && pos+2 < len(buf); i++ {
+				palette[i] = [3]byte{buf[pos], buf[pos+1], buf[pos+2]} // R,G,B
+				pos += 3
+			}
+			pos = decodePaletteRow(out[rowStart:], buf, pos, palette, int(w))
+		case 2: // Gradient
+			pos = decodeGradientRow(out[rowStart:], buf, pos, int(w), prevRow)
+		default:
+			// Unknown filter — skip to row boundary (best-effort)
+			pos += int(w) * 3
+		}
+		prevRow = out[rowStart : rowStart+int(w)*4]
+	}
+	return out
+}
+
+func (c *Client) readCompactLen() int {
+	var b [1]byte
+	io.ReadFull(c.conn, b[:])
+	v := int(b[0])
+	if v <= 0x7F {
+		return v
+	}
+	if v <= 0xBF {
+		var b2 [1]byte
+		io.ReadFull(c.conn, b2[:])
+		return ((v & 0x7F) << 8) | int(b2[0])
+	}
+	var b2, b3 [1]byte
+	io.ReadFull(c.conn, b2[:])
+	io.ReadFull(c.conn, b3[:])
+	return ((v & 0x3F) << 16) | (int(b2[0]) << 8) | int(b3[0])
+}
+
+func decodeGradientRow(row []byte, src []byte, pos int, w int, prevRow []byte) int {
+	for x := 0; x < w; x++ {
+		if pos+2 >= len(src) {
+			return pos
+		}
+		var predR, predG, predB int
+		if x == 0 && prevRow == nil {
+			row[0] = src[pos+2]   // B
+			row[1] = src[pos+1]   // G
+			row[2] = src[pos]     // R
+			row[3] = 255
+			pos += 3
+			continue
+		}
+		above := prevRow != nil
+		left := x > 0
+		if left && above {
+			predR = int(prevRow[(x-1)*4+2]) + int(prevRow[x*4+2]) - int(row[(x-1)*4+2])
+			predG = int(prevRow[(x-1)*4+1]) + int(prevRow[x*4+1]) - int(row[(x-1)*4+1])
+			predB = int(prevRow[(x-1)*4]) + int(prevRow[x*4]) - int(row[(x-1)*4])
+		} else if left {
+			predR = int(row[(x-1)*4+2])
+			predG = int(row[(x-1)*4+1])
+			predB = int(row[(x-1)*4])
+		} else if above {
+			predR = int(prevRow[x*4+2])
+			predG = int(prevRow[x*4+1])
+			predB = int(prevRow[x*4])
+		}
+		row[x*4] = clampByte(predB + int(decodeS8(src[pos+2])))
+		row[x*4+1] = clampByte(predG + int(decodeS8(src[pos+1])))
+		row[x*4+2] = clampByte(predR + int(decodeS8(src[pos])))
+		row[x*4+3] = 255
+		pos += 3
+	}
+	return pos
+}
+
+func decodePaletteRow(row []byte, src []byte, pos int, palette [][3]byte, w int) int {
+	nColors := len(palette)
+	needed := 0
+
+	switch {
+	case nColors == 1:
+		b := palette[0][2]
+		g := palette[0][1]
+		r := palette[0][0]
+		for x := 0; x < w; x++ {
+			off := x * 4
+			row[off], row[off+1], row[off+2], row[off+3] = b, g, r, 255
+		}
+	case nColors <= 2:
+		needed = (w + 7) / 8
+		for x := 0; x < w && pos+needed <= len(src); x++ {
+			idx := (src[pos+x/8] >> (7 - x%8)) & 1
+			p := palette[idx]
+			off := x * 4
+			row[off], row[off+1], row[off+2], row[off+3] = p[2], p[1], p[0], 255
+		}
+	case nColors <= 4:
+		needed = (w*2 + 7) / 8
+		for x := 0; x < w && pos+needed <= len(src); x++ {
+			bitOff := uint(6 - (x*2)%8)
+			idx := (src[pos+(x*2)/8] >> bitOff) & 3
+			p := palette[idx]
+			off := x * 4
+			row[off], row[off+1], row[off+2], row[off+3] = p[2], p[1], p[0], 255
+		}
+	case nColors <= 16:
+		needed = (w + 1) / 2
+		for x := 0; x < w && pos+needed <= len(src); x++ {
+			var idx byte
+			if x%2 == 0 {
+				idx = src[pos+x/2] >> 4
+			} else {
+				idx = src[pos+x/2] & 0x0F
+			}
+			p := palette[idx]
+			off := x * 4
+			row[off], row[off+1], row[off+2], row[off+3] = p[2], p[1], p[0], 255
+		}
+	default: // <= 256
+		needed = w
+		for x := 0; x < w && pos+x < len(src); x++ {
+			idx := src[pos+x]
+			p := palette[idx]
+			off := x * 4
+			row[off], row[off+1], row[off+2], row[off+3] = p[2], p[1], p[0], 255
+		}
+	}
+	return pos + needed
+}
+
+func clampByte(v int) byte {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return byte(v)
+}
+
+func decodeS8(b byte) int8 { return int8(b) }
+
+// copyTile writes a w×h BGRA tile into the framebuffer at (tileX, tileY)
+func copyTile(fb []byte, stride uint16, tileX, tileY, tw, th uint16, tile []byte) {
+	for ty := uint16(0); ty < th; ty++ {
+		srcOff := int(ty) * int(tw) * 4
+		dstOff := (int(tileY+ty)*int(stride) + int(tileX)) * 4
+		copy(fb[dstOff:], tile[srcOff:srcOff+int(tw)*4])
+	}
+}
+
+// fillRect fills a w×h rectangle in the framebuffer at (x, y) with a BGRA colour
+func fillRect(fb []byte, stride uint16, x, y, w, h uint16, color []byte) {
+	for ty := uint16(0); ty < h; ty++ {
+		for tx := uint16(0); tx < w; tx++ {
+			off := (int(y+ty)*int(stride) + int(x+tx)) * 4
+			fb[off] = color[0]
+			fb[off+1] = color[1]
+			fb[off+2] = color[2]
+			fb[off+3] = color[3]
+		}
+	}
 }
 
 func (c *Client) setState(s protocol.ConnState) {
