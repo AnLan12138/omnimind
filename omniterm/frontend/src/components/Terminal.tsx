@@ -11,6 +11,8 @@ import { useConfigStore } from '../stores/configStore'
 import { useBroadcastStore } from '../stores/broadcastStore'
 import { useRecordingStore } from '../stores/recordingStore'
 import { useShortcutStore, matchShortcut, registerShortcutAction, getShortcutAction } from '../stores/shortcutStore'
+import { getHighlighter } from '../lib/KeywordHighlighter'
+import { SaveTerminalContent } from '../../wailsjs/go/main/App'
 
 interface Props { connId: string; onDisconnect: (connId: string) => void }
 interface CtxMenu { x: number; y: number; visible: boolean }
@@ -26,7 +28,11 @@ export default function Terminal({ connId, onDisconnect }: Props) {
   const terminalFontFamily = useConfigStore(s => s.terminalFontFamily)
   const terminalCursorStyle = useConfigStore(s => s.cursorStyle)
   const terminalScrollback = useConfigStore(s => s.scrollback)
+  const highlightEnabled = useConfigStore(s => s.highlightEnabled)
+  const highlightRules = useConfigStore(s => s.highlightRules)
   const [ctxMenu, setCtxMenu] = useState<CtxMenu>({ x: 0, y: 0, visible: false })
+  const [toast, setToast] = useState<string | null>(null)
+  const hlRef = useRef(getHighlighter())
 
   const copy = useCallback(() => {
     const sel = xtermRef.current?.getSelection()
@@ -62,6 +68,11 @@ export default function Terminal({ connId, onDisconnect }: Props) {
       return () => clearTimeout(timer)
     }
   }, [activeTabId, tab?.active])
+
+  // Sync highlight config to the highlighter engine
+  useEffect(() => {
+    hlRef.current.updateConfig({ enabled: highlightEnabled, rules: highlightRules })
+  }, [highlightEnabled, highlightRules])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -137,8 +148,11 @@ export default function Terminal({ connId, onDisconnect }: Props) {
     }
     containerRef.current.addEventListener('wheel', onWheel, { passive: false })
 
+    const hl = hlRef.current
     EventsOn('conn:' + connId + ':data', (d: string | Uint8Array) => {
-      xterm.write(typeof d === 'string' ? d : new TextDecoder().decode(d))
+      const raw = typeof d === 'string' ? d : new TextDecoder().decode(d)
+      const processed = hl.process(raw)
+      if (processed) xterm.write(processed)
     })
     EventsOn('conn:' + connId + ':state', (s: string) => {
       updateTabState(connId, s)
@@ -158,12 +172,29 @@ export default function Terminal({ connId, onDisconnect }: Props) {
     registerShortcutAction('saveTerminal', e => {
       e.preventDefault()
       const lines: string[] = []
-      for (let i = 0; i < xterm.buffer.active.length; i++) {
-        const line = xterm.buffer.active.getLine(i)
+      const buf = xterm.buffer.active
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i)
         if (line) lines.push(line.translateToString())
       }
-      const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'terminal.txt'; a.click()
+      if (lines.length === 0) {
+        setToast('终端缓冲区为空')
+        setTimeout(() => setToast(null), 2500)
+        return true
+      }
+      const content = lines.join('\n')
+      const filename = (tab?.title || 'terminal').replace(/[:]/g, '_')
+      SaveTerminalContent(content, filename)
+        .then(() => {
+          setToast('终端内容已保存')
+          setTimeout(() => setToast(null), 2500)
+        })
+        .catch((err: any) => {
+          if (!err?.toString().includes('取消')) {
+            setToast('保存失败: ' + (err?.toString() || '未知错误'))
+            setTimeout(() => setToast(null), 3000)
+          }
+        })
       return true
     })
     registerShortcutAction('selectAll', e => { e.preventDefault(); xterm.selectAll(); return true })
@@ -198,7 +229,7 @@ export default function Terminal({ connId, onDisconnect }: Props) {
   }, [connId])
 
   return (
-    <div className="flex flex-col h-full bg-vscode-bg">
+    <div className="relative flex flex-col h-full bg-vscode-bg">
       <div ref={containerRef} className="flex-1 overflow-hidden" />
       {ctxMenu.visible && (
         <div className="fixed z-[100] w-44 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
@@ -207,7 +238,33 @@ export default function Terminal({ connId, onDisconnect }: Props) {
             return [
               { label: '复制', action: () => { copy(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'copy' },
               { label: '粘贴', action: () => { paste(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'paste' },
-              { label: '清除缓冲', action: () => { xtermRef.current?.clear(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'clearBuffer' },
+              { label: '清屏', action: () => { xtermRef.current?.clear(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'clearBuffer' },
+              { label: '保存终端', action: () => {
+                setCtxMenu(p => ({ ...p, visible: false }))
+                const buf = xtermRef.current?.buffer.active
+                if (!buf || buf.length === 0) {
+                  setToast('终端缓冲区为空')
+                  setTimeout(() => setToast(null), 2500)
+                  return
+                }
+                const lines: string[] = []
+                for (let i = 0; i < buf.length; i++) {
+                  const line = buf.getLine(i)
+                  if (line) lines.push(line.translateToString())
+                }
+                const filename = (tab?.title || 'terminal').replace(/[:]/g, '_')
+                SaveTerminalContent(lines.join('\n'), filename)
+                  .then(() => {
+                    setToast('终端内容已保存')
+                    setTimeout(() => setToast(null), 2500)
+                  })
+                  .catch((err: any) => {
+                    if (!err?.toString().includes('取消') && !err?.toString().includes('未选择')) {
+                      setToast('保存失败: ' + (err?.toString() || '未知错误'))
+                      setTimeout(() => setToast(null), 3000)
+                    }
+                  })
+              }, kid: 'saveTerminal' },
               { label: '全选', action: () => { xtermRef.current?.selectAll(); setCtxMenu(p => ({ ...p, visible: false })) }, kid: 'selectAll' },
             ].map(item => (
               <button key={item.label} onClick={item.action} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">
@@ -215,6 +272,11 @@ export default function Terminal({ connId, onDisconnect }: Props) {
               </button>
             ))
           })()}
+        </div>
+      )}
+      {toast && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[200] px-4 py-2 bg-vscode-accent text-white rounded shadow-lg text-[12px] animate-pulse">
+          {toast}
         </div>
       )}
     </div>

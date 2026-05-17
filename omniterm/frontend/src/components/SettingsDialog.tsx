@@ -1,12 +1,30 @@
 import { useState, useEffect } from 'react'
-import { X, Monitor, Keyboard, Palette, Shield, Info, Check, Download, Loader2, Puzzle, FolderOpen, Cloud, CloudUpload, CloudDownload } from 'lucide-react'
+import { X, Monitor, Keyboard, Palette, Shield, Info, Check, Download, Loader2, Puzzle, FolderOpen, Cloud, CloudUpload, CloudDownload, Eye, EyeOff } from 'lucide-react'
 import { useThemeStore, THEMES } from '../stores/themeStore'
 import { useConfigStore, type AppSettings } from '../stores/configStore'
 import { useExtensionStore } from '../stores/extensionStore'
 import { useI18n } from '../lib/i18n'
 import { CheckForUpdate, InstallUpdate, PickExecutable } from '../../wailsjs/go/main/App'
 import { useShortcutStore } from '../stores/shortcutStore'
+import { PRESET_RULES, SGR, type HighlightRule } from '../lib/KeywordHighlighter'
 import logoImg from '../assets/images/logo-universal.png'
+
+// Map SGR color names to hex for UI display
+function colorToHex(name: string): string {
+  const map: Record<string, string> = {
+    red: '#e74856', boldRed: '#f14c4c', green: '#16c60c', boldGreen: '#23d18b',
+    yellow: '#f9f939', boldYellow: '#ffff4c', blue: '#3b78ff', boldBlue: '#3b8eea',
+    magenta: '#b4009e', boldMagenta: '#e454ff', cyan: '#61d6d6', boldCyan: '#29b8db',
+    white: '#cccccc', boldWhite: '#ffffff', black: '#0c0c0c',
+    brightBlack: '#767676', brightRed: '#f14c4c', brightGreen: '#23d18b',
+    brightYellow: '#ffff4c', brightBlue: '#3b8eea', brightMagenta: '#e454ff',
+    brightCyan: '#29b8db', brightWhite: '#ffffff', gray: '#a0a0a0',
+    orange: '#ff8700', lime: '#87ff00', sky: '#00afff', pink: '#ff87af',
+    amber: '#ffaf00', teal: '#00af87', violet: '#875fff',
+    dim: '#888888', bold: '#ffffff', italic: '#cccccc', underline: '#cccccc',
+  }
+  return map[name] || '#888888'
+}
 
 interface Props { onClose: () => void; initialTab?: string }
 
@@ -56,21 +74,25 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
   const [showShortcuts, setShowShortcuts] = useState(config.showShortcuts)
   const [masterPass, setMasterPass] = useState('')
   const [saved, setSaved] = useState(false)
+  const [highlightEnabled, setHighlightEnabled] = useState(config.highlightEnabled)
+  const [highlightRules, setHighlightRules] = useState<HighlightRule[]>(config.highlightRules)
 
   useEffect(() => {
     setFontSize(config.terminalFontSize); setFontFamily(config.terminalFontFamily)
     setCursorStyle(config.cursorStyle); setScrollback(config.scrollback)
     setThemePick(config.terminalTheme); setAccentColor(config.accentColor)
     setUIScale(config.uiScale); setLang(config.lang); setShowShortcuts(config.showShortcuts)
-  }, [config.terminalFontSize, config.terminalFontFamily, config.cursorStyle, config.scrollback, config.terminalTheme, config.accentColor, config.uiScale, config.lang, config.showShortcuts])
+    setHighlightEnabled(config.highlightEnabled); setHighlightRules(config.highlightRules)
+  }, [config.terminalFontSize, config.terminalFontFamily, config.cursorStyle, config.scrollback, config.terminalTheme, config.accentColor, config.uiScale, config.lang, config.showShortcuts, config.highlightEnabled, config.highlightRules])
 
   const hasChanges = fontSize !== config.terminalFontSize || fontFamily !== config.terminalFontFamily ||
     cursorStyle !== config.cursorStyle || scrollback !== config.scrollback ||
     themePick !== config.terminalTheme || uiScale !== config.uiScale ||
-    accentColor !== config.accentColor || lang !== config.lang || showShortcuts !== config.showShortcuts
+    accentColor !== config.accentColor || lang !== config.lang || showShortcuts !== config.showShortcuts ||
+    highlightEnabled !== config.highlightEnabled || JSON.stringify(highlightRules) !== JSON.stringify(config.highlightRules)
 
   const apply = () => {
-    config.update({ terminalFontSize: fontSize, terminalFontFamily: fontFamily, cursorStyle, scrollback, terminalTheme: themePick, accentColor, uiScale, lang })
+    config.update({ terminalFontSize: fontSize, terminalFontFamily: fontFamily, cursorStyle, scrollback, terminalTheme: themePick, accentColor, uiScale, lang, highlightEnabled, highlightRules })
     setTheme(themePick); setSaved(true); setTimeout(() => setSaved(false), 1500)
   }
   const cancel = () => {
@@ -78,6 +100,7 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
     setCursorStyle(config.cursorStyle); setScrollback(config.scrollback)
     setThemePick(config.terminalTheme); setAccentColor(config.accentColor)
     setUIScale(config.uiScale); setLang(config.lang)
+    setHighlightEnabled(config.highlightEnabled); setHighlightRules(config.highlightRules)
   }
 
   const CurTab = tabs.find(x => x.id === active)!
@@ -181,6 +204,96 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
                 <div>
                   <label className="block text-[11px] text-vscode-text-dim mb-1">{t('scrollback')}{scrollback !== config.scrollback && <span className="ml-1 text-vscode-yellow text-[10px]">•</span>}</label>
                   <input type="number" value={scrollback} onChange={e => setScrollback(Number(e.target.value))} min={500} max={100000} step={1000} className="w-28 px-2 h-7 bg-vscode-input border border-vscode-border rounded text-[12px] text-vscode-text focus:outline-none focus:border-vscode-accent font-mono" />
+                </div>
+
+                {/* Keyword Highlighting */}
+                <div className="border-t border-vscode-border pt-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-[11px] font-semibold text-vscode-text">关键字高亮</label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[9px] text-vscode-text-dim">{highlightRules.filter(r => r.enabled).length}/{highlightRules.length} 条启用</span>
+                      <button
+                        onClick={() => setHighlightEnabled(!highlightEnabled)}
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-colors ${highlightEnabled ? 'bg-vscode-green/20 text-vscode-green' : 'bg-vscode-input text-vscode-text-dim'}`}>
+                        {highlightEnabled ? <Eye size={11} /> : <EyeOff size={11} />}
+                        {highlightEnabled ? '已启用' : '已禁用'}
+                      </button>
+                    </div>
+                  </div>
+                  {highlightEnabled && (
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                      {(() => {
+                        const groups = new Map<string, HighlightRule[]>()
+                        for (const r of highlightRules) {
+                          const cat = r.category || '其他'
+                          if (!groups.has(cat)) groups.set(cat, [])
+                          groups.get(cat)!.push(r)
+                        }
+                        return Array.from(groups.entries()).map(([cat, rules]) => (
+                          <div key={cat}>
+                            <div className="text-[10px] font-semibold text-vscode-text-dim mb-1 px-1 border-b border-vscode-border pb-0.5">
+                              {cat}
+                              <span className="ml-1 font-normal text-vscode-text-dim/60">({rules.filter(r => r.enabled).length}/{rules.length})</span>
+                            </div>
+                            <div className="space-y-0.5">
+                              {rules.map((rule) => {
+                                const i = highlightRules.findIndex(r => r.id === rule.id)
+                                return (
+                                  <div key={rule.id} className="flex items-center gap-2 px-1.5 h-6 hover:bg-vscode-hover rounded group">
+                                    <input
+                                      type="checkbox"
+                                      checked={rule.enabled}
+                                      onChange={() => {
+                                        const next = [...highlightRules]
+                                        next[i] = { ...next[i], enabled: !next[i].enabled }
+                                        setHighlightRules(next)
+                                      }}
+                                      className="shrink-0 w-3 h-3"
+                                    />
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: colorToHex(rule.color) }} />
+                                    <span className="text-[11px] text-vscode-text flex-1 truncate">{rule.name}</span>
+                                    <button
+                                      onClick={() => {
+                                        const next = [...highlightRules]
+                                        const preset = PRESET_RULES.find(p => p.id === rule.id)
+                                        if (preset) next[i] = { ...preset }
+                                        setHighlightRules(next)
+                                      }}
+                                      className="text-[9px] text-vscode-text-dim hover:text-vscode-accent opacity-0 group-hover:opacity-100 shrink-0">
+                                      重置
+                                    </button>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        ))
+                      })()}
+                    </div>
+                  )}
+                  <div className="flex gap-1 mt-2">
+                    <button
+                      onClick={() => setHighlightRules(PRESET_RULES.map(r => ({ ...r })))}
+                      className="px-2 py-0.5 text-[10px] text-vscode-text-dim hover:text-vscode-text border border-vscode-border rounded">
+                      恢复默认
+                    </button>
+                    <button
+                      onClick={() => {
+                        const next = highlightRules.map(r => ({ ...r, enabled: true }))
+                        setHighlightRules(next)
+                      }}
+                      className="px-2 py-0.5 text-[10px] text-vscode-text-dim hover:text-vscode-text border border-vscode-border rounded">
+                      全部启用
+                    </button>
+                    <button
+                      onClick={() => {
+                        const next = highlightRules.map(r => ({ ...r, enabled: false }))
+                        setHighlightRules(next)
+                      }}
+                      className="px-2 py-0.5 text-[10px] text-vscode-text-dim hover:text-vscode-text border border-vscode-border rounded">
+                      全部禁用
+                    </button>
+                  </div>
                 </div>
               </>
             )}

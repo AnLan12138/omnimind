@@ -97,6 +97,8 @@ export function SaveFolder(arg1:session.Folder):Promise<void>;
 
 export function SaveSession(arg1:session.Session):Promise<void>;
 
+export function SaveTerminalContent(arg1:string,arg2:string):Promise<void>;
+
 export function Send(arg1:string,arg2:string):Promise<void>;
 
 export function SendPassword(arg1:string,arg2:string):Promise<void>;

@@ -186,6 +186,10 @@ export function SaveSession(arg1) {
   return window['go']['main']['App']['SaveSession'](arg1);
 }
 
+export function SaveTerminalContent(arg1, arg2) {
+  return window['go']['main']['App']['SaveTerminalContent'](arg1, arg2);
+}
+
 export function Send(arg1, arg2) {
   return window['go']['main']['App']['Send'](arg1, arg2);
 }

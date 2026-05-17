@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -649,6 +650,30 @@ func (a *App) PickDownloadDir() (string, error) {
 	if err != nil { return "", err }
 	if dir == "" { return "", fmt.Errorf("未选择目录") }
 	return dir, nil
+}
+
+func (a *App) SaveTerminalContent(content string, filename string) error {
+	// Sanitize filename
+	safe := strings.Map(func(r rune) rune {
+		switch r {
+		case '<', '>', ':', '"', '/', '\\', '|', '?', '*':
+			return '_'
+		}
+		return r
+	}, filename)
+
+	// Use native Windows GetSaveFileNameW directly — Wails SaveFileDialog crashes
+	filter := "Text Files (*.txt)\000*.txt\000All Files (*.*)\000*.*\000"
+	filePath, err := winSaveFileDialog("保存终端内容", safe, filter, 1)
+	if err != nil {
+		return err
+	}
+	if filePath == "" {
+		return nil // user cancelled
+	}
+
+	windowsContent := strings.ReplaceAll(content, "\n", "\r\n")
+	return os.WriteFile(filePath, []byte(windowsContent), 0644)
 }
 
 func (a *App) SFTPUploadData(connID string, remotePath string, data string) error {

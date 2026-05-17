@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import type { Lang } from '../lib/i18n'
+import type { HighlightRule } from '../lib/KeywordHighlighter'
+import { PRESET_RULES } from '../lib/KeywordHighlighter'
 
 export type UIScale = 'compact' | 'normal' | 'comfortable'
 
@@ -16,6 +18,8 @@ export interface AppSettings {
   scrollback: number
   terminalTheme: string
   accentColor: string
+  highlightEnabled: boolean
+  highlightRules: HighlightRule[]
 }
 
 const defaults: AppSettings = {
@@ -28,12 +32,30 @@ const defaults: AppSettings = {
   scrollback: 10000,
   terminalTheme: 'vs-code',
   accentColor: '#007acc',
+  highlightEnabled: true,
+  highlightRules: PRESET_RULES,
 }
 
 function load(): AppSettings {
   try {
     const raw = localStorage.getItem('omnimind-settings')
-    if (raw) return { ...defaults, ...JSON.parse(raw) }
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      // Migrate: if stored rules lack the 'category' field (old format), use presets
+      if (parsed.highlightRules && Array.isArray(parsed.highlightRules) && parsed.highlightRules.length > 0) {
+        const first = parsed.highlightRules[0]
+        if (first.category === undefined) {
+          // Merge: keep user's enabled/disabled state where possible
+          const merged = PRESET_RULES.map(preset => {
+            const old = (parsed.highlightRules as HighlightRule[]).find((r: HighlightRule) => r.id === preset.id)
+            return old ? { ...preset, enabled: old.enabled } : { ...preset }
+          })
+          parsed.highlightRules = merged
+        }
+      }
+      if (parsed.highlightEnabled === undefined) parsed.highlightEnabled = true
+      return { ...defaults, ...parsed }
+    }
   } catch {}
   return { ...defaults }
 }
