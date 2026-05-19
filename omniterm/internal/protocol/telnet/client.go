@@ -192,6 +192,7 @@ func (c *Client) readLoop(ctx context.Context) {
 					if i+1 >= len(raw) {
 						// Save IAC as leftover for next read
 						leftover = append(leftover, raw[i:]...)
+							i = len(raw)
 						break
 					}
 
@@ -207,7 +208,8 @@ func (c *Client) readLoop(ctx context.Context) {
 						// Three-byte negotiation: IAC <cmd> <opt>
 						if i+2 >= len(raw) {
 							leftover = append(leftover, raw[i:]...)
-							break
+							i = len(raw)
+						break
 						}
 						c.handleNegotiation(next, raw[i+2])
 						i += 3

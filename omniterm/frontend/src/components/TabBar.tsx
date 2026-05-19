@@ -1,14 +1,14 @@
 import { useState, useRef } from 'react'
-import { X, Pencil, Copy } from 'lucide-react'
+import { X, Pencil, Copy, XCircle } from 'lucide-react'
 import { useTabStore, type Tab } from '../stores/tabStore'
 
 const stateColors: Record<string, string> = {
   connected: '#4ec9b0', connecting: '#cca700', reconnecting: '#cca700', error: '#f44747', disconnected: '#6a6a6a',
 }
 
-interface Props { onCloneTab?: (tab: Tab) => void }
+interface Props { onCloneTab?: (tab: Tab) => void; onCloseAll?: () => void }
 
-export default function TabBar({ onCloneTab }: Props) {
+export default function TabBar({ onCloneTab, onCloseAll }: Props) {
   const { tabs, activeTabId, setActive, removeTab, reorderTabs } = useTabStore()
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [ctxTab, setCtxTab] = useState<{ tab: Tab; x: number; y: number } | null>(null)
@@ -46,9 +46,14 @@ export default function TabBar({ onCloneTab }: Props) {
             </button>
           </div>
         ))}
+        {tabs.length > 0 && onCloseAll && (
+          <button onClick={onCloseAll} title="关闭所有连接"
+            className="flex items-center justify-center w-8 h-8 ml-auto mr-1 shrink-0 rounded hover:bg-vscode-red/20 text-vscode-text-muted hover:text-vscode-red transition-colors">
+            <XCircle size={16} />
+          </button>
+        )}
       </div>
 
-      {/* Tab context menu */}
       {ctxTab && (
         <div className="fixed z-50 w-36 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctxTab.x, top: ctxTab.y }}
           onClick={() => setCtxTab(null)}>

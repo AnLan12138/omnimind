@@ -3,7 +3,7 @@ import { Search } from 'lucide-react'
 import ActivityBar from './components/ActivityBar'
 import SessionSidebar from './components/SessionSidebar'
 import TabBar from './components/TabBar'
-import Terminal from './components/Terminal'
+import Terminal, { disposeTerminal } from './components/Terminal'
 import VNCViewer from './components/VNCViewer'
 import RDPViewer from './components/RDPViewer'
 import StatusBar from './components/StatusBar'
@@ -151,8 +151,18 @@ export default function App() {
     }
   }, [])
 
+  const handleCloseAll = useCallback(async () => {
+    const all = useTabStore.getState().tabs
+    for (const t of all) {
+      try { await window.go.main.App.Disconnect(t.connId) } catch {}
+      disposeTerminal(t.connId)
+      removeTab(t.id)
+    }
+  }, [removeTab])
+
   const handleDisconnect = useCallback(async (connId: string) => {
     try { await window.go.main.App.Disconnect(connId) } catch {}
+    disposeTerminal(connId)
     const t = tabs.find(t => t.connId === connId)
     if (t) removeTab(t.id)
   }, [tabs, removeTab])
@@ -237,7 +247,7 @@ export default function App() {
         )}
 
         <div className="flex flex-col flex-1 min-w-0">
-          <TabBar onCloneTab={handleCloneTab} />
+          <TabBar onCloneTab={handleCloneTab} onCloseAll={handleCloseAll} />
 
           <div className="flex-1 min-h-0">
             {tabs.length === 0 ? (
