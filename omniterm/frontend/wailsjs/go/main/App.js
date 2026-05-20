@@ -50,6 +50,10 @@ export function GenerateSSHKey(arg1, arg2) {
   return window['go']['main']['App']['GenerateSSHKey'](arg1, arg2);
 }
 
+export function GetConnectionBuffer(arg1) {
+  return window['go']['main']['App']['GetConnectionBuffer'](arg1);
+}
+
 export function GetConnectionState(arg1) {
   return window['go']['main']['App']['GetConnectionState'](arg1);
 }
@@ -104,6 +108,10 @@ export function ListSerialPorts() {
 
 export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
+}
+
+export function LogFrontend(arg1) {
+  return window['go']['main']['App']['LogFrontend'](arg1);
 }
 
 export function OpenSFTP(arg1) {

@@ -29,6 +29,8 @@ export function FTPUpload(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function GenerateSSHKey(arg1:string,arg2:string):Promise<string>;
 
+export function GetConnectionBuffer(arg1:string):Promise<string>;
+
 export function GetConnectionState(arg1:string):Promise<string>;
 
 export function GetLatency(arg1:string):Promise<number>;
@@ -56,6 +58,8 @@ export function ListSFTP(arg1:string,arg2:string):Promise<Array<filetransfer.Fil
 export function ListSerialPorts():Promise<Array<string>>;
 
 export function ListSessions():Promise<Array<session.Session>>;
+
+export function LogFrontend(arg1:string):Promise<void>;
 
 export function OpenSFTP(arg1:string):Promise<void>;
 

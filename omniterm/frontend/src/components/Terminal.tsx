@@ -2,21 +2,19 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
-import { WebglAddon } from '@xterm/addon-webgl'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import { useTabStore } from '../stores/tabStore'
 import { useThemeStore } from '../stores/themeStore'
 import { useConfigStore } from '../stores/configStore'
 import { useBroadcastStore } from '../stores/broadcastStore'
+import { useSplitStore } from '../stores/splitStore'
 import { useRecordingStore } from '../stores/recordingStore'
 import { useShortcutStore, matchShortcut, registerShortcutAction, getShortcutAction } from '../stores/shortcutStore'
 import { getHighlighter } from '../lib/KeywordHighlighter'
 import { SaveTerminalContent } from '../../wailsjs/go/main/App'
 
-// ---------------------------------------------------------------------------
-// Global xterm pool — instances survive ALL React mount/unmount cycles
-// ---------------------------------------------------------------------------
+// ── Global xterm pool ──
 type PoolEntry = { xterm: XTerm; fit: FitAddon; dispose: () => void }
 const pool = new Map<string, PoolEntry>()
 
@@ -25,7 +23,23 @@ export function disposeTerminal(connId: string) {
   pool.delete(connId)
 }
 
-// ---------------------------------------------------------------------------
+export function getPoolXterm(connId: string): XTerm | null {
+  return pool.get(connId)?.xterm || null
+}
+
+// Buffer for data that arrives before xterm pool entry exists
+const dataBuf = new Map<string, string[]>()
+export function feedBuffer(connId: string, data: string) {
+  const b = dataBuf.get(connId) || []
+  b.push(data)
+  dataBuf.set(connId, b)
+}
+export function flushBuffer(connId: string, xterm: XTerm) {
+  const b = dataBuf.get(connId)
+  if (b) { dataBuf.delete(connId); for (const d of b) xterm.write(d); try { xterm.refresh(0, xterm.rows) } catch {} }
+}
+
+// ── Component ──
 interface Props { connId: string; onDisconnect: (connId: string) => void }
 interface CtxMenu { x: number; y: number; visible: boolean }
 
@@ -44,7 +58,6 @@ export default function Terminal({ connId, onDisconnect }: Props) {
   const [ctxMenu, setCtxMenu] = useState<CtxMenu>({ x: 0, y: 0, visible: false })
   const [toast, setToast] = useState<string | null>(null)
   const hlRef = useRef(getHighlighter())
-
   const copy = useCallback(() => {
     const sel = xtermRef.current?.getSelection()
     if (!sel) return
@@ -69,7 +82,17 @@ export default function Terminal({ connId, onDisconnect }: Props) {
 
   useEffect(() => { hlRef.current.updateConfig({ enabled: highlightEnabled, rules: highlightRules }) }, [highlightEnabled, highlightRules])
 
-  // ── Main effect: create ONCE (store in pool), re-attach on remount ──
+  // ── Re-focus after mode switch ──
+  const broadcastActive = useBroadcastStore(s => s.active)
+  const splitActive = useSplitStore(s => s.active)
+  useEffect(() => {
+    const xterm = xtermRef.current
+    if (xterm && tab?.active) {
+      requestAnimationFrame(() => requestAnimationFrame(() => xterm.focus()))
+    }
+  }, [broadcastActive, splitActive])
+
+  // ── Main effect: create ONCE in pool, reuse on remount ──
   useEffect(() => {
     if (!containerRef.current) return
 
@@ -78,16 +101,15 @@ export default function Terminal({ connId, onDisconnect }: Props) {
     let fit: FitAddon
 
     if (entry) {
-      // ── Reuse existing instance ──
       xterm = entry.xterm
       fit = entry.fit
-      // Move xterm element into the new React container
+      // Move xterm back to new container
       if (xterm.element && xterm.element.parentNode !== containerRef.current) {
         containerRef.current.appendChild(xterm.element)
       }
       fit.fit()
+      try { xterm.refresh(0, xterm.rows) } catch {}
     } else {
-      // ── First time: create everything ──
       xterm = new XTerm({
         cursorBlink: true, cursorStyle: terminalCursorStyle, fontSize: terminalFontSize,
         fontFamily: terminalFontFamily, scrollback: terminalScrollback, theme: terminalTheme,
@@ -96,15 +118,13 @@ export default function Terminal({ connId, onDisconnect }: Props) {
       fit = new FitAddon()
       xterm.loadAddon(fit)
       xterm.loadAddon(new SearchAddon())
-      try { xterm.loadAddon(new WebglAddon()) } catch {}
+      // WebGL addon disabled — crashes on container resize during mode switch
       const uni = new Unicode11Addon(); xterm.loadAddon(uni); xterm.unicode.activeVersion = '11'
       xterm.open(containerRef.current)
       fit.fit()
 
-      // OSC 52 clipboard
       try { xterm.parser.registerOscHandler(52, (d: string) => { const s = d.indexOf(';'); if (s > 0) { try { navigator.clipboard.writeText(decodeURIComponent(escape(atob(d.slice(s + 1))))).catch(() => {}) } catch {} } return false }) } catch {}
 
-      // ── Data flow: each terminal has its OWN onData + EventsOn ──
       xterm.onData(d => {
         const rec = useRecordingStore.getState()
         if (rec.active) rec.feed(d)
@@ -117,18 +137,9 @@ export default function Terminal({ connId, onDisconnect }: Props) {
       })
 
       const hl = hlRef.current
-      const onData = (d: string | Uint8Array) => {
-        const raw = typeof d === 'string' ? d : new TextDecoder().decode(d)
-        const processed = hl.process(raw)
-        if (processed) xterm.write(processed)
-      }
-      const onState = (s: string) => { updateTabState(connId, s); if (s === 'connected') { setTimeout(() => xterm.focus(), 200) } }
-      const onErr = (e: string) => { console.error(`[${connId}]`, e); if (e.includes('handshake') || e.includes('auth')) { setTimeout(() => xterm.write('\r\nPassword: '), 300) } }
-      EventsOn('conn:' + connId + ':data', onData)
-      EventsOn('conn:' + connId + ':state', onState)
-      EventsOn('conn:' + connId + ':error', onErr)
+      let evCount = 0
+      EventsOn('conn:' + connId + ':error', (e: string) => { console.error(`[${connId}]`, e); if (e.includes('handshake') || e.includes('auth')) { setTimeout(() => xterm.write('\r\nPassword: '), 300) } })
 
-      // Shortcut actions
       registerShortcutAction('copy', e => { e.preventDefault(); copy(); return true })
       registerShortcutAction('paste', e => { e.preventDefault(); paste(); return true })
       registerShortcutAction('clearBuffer', e => { e.preventDefault(); xterm.clear(); return true })
@@ -154,17 +165,29 @@ export default function Terminal({ connId, onDisconnect }: Props) {
         return true
       })
 
-      // Store in pool with cleanup
       entry = { xterm, fit, dispose: () => { EventsOff('conn:' + connId + ':data'); EventsOff('conn:' + connId + ':state'); EventsOff('conn:' + connId + ':error'); xterm.dispose() } }
       pool.set(connId, entry)
     }
 
     xtermRef.current = xterm
+    flushBuffer(connId, xterm)
 
-    // ── Per-mount setup (re-done on every mount) ──
     xterm.onSelectionChange(() => { const s = xterm.getSelection(); if (s) navigator.clipboard.writeText(s).catch(() => {}) })
 
-    const ro = new ResizeObserver(() => { fit.fit(); if (xterm.rows && xterm.cols) window.go.main.App.Resize(connId, xterm.rows, xterm.cols) })
+    // ── ResizeObserver with debounce ──
+    let roTimer = 0
+    const ro = new ResizeObserver(() => {
+      clearTimeout(roTimer)
+      roTimer = window.setTimeout(() => {
+        const w = containerRef.current?.clientWidth || 0
+        const h = containerRef.current?.clientHeight || 0
+        if (w < 100 || h < 100) return
+        requestAnimationFrame(() => {
+          fit.fit()
+          // Don't Resize() during mode transitions — triggers NAWS that resets Huawei devices
+        })
+      }, 80)
+    })
     ro.observe(containerRef.current)
 
     const termEl = xterm.element!
@@ -177,18 +200,18 @@ export default function Terminal({ connId, onDisconnect }: Props) {
     containerRef.current.addEventListener('wheel', onWheel, { passive: false })
 
     const tabSt = useTabStore.getState().tabs.find(t => t.connId === connId)
-    if (tabSt?.active) { setTimeout(() => xterm.focus(), 50) }
+    if (tabSt?.active) { setTimeout(() => xterm.focus(), 100) }
 
     const closeCtx = () => setCtxMenu(p => ({ ...p, visible: false }))
     window.addEventListener('click', closeCtx)
 
     return () => {
+      clearTimeout(roTimer)
       ro.disconnect()
       containerRef.current?.removeEventListener('wheel', onWheel)
       window.removeEventListener('click', closeCtx)
       termEl.removeEventListener('contextmenu', onCtx)
-      // ★ NEVER dispose xterm — keep it alive in the pool
-      // Just detach from DOM so React can remove the container
+      // ★ Keep xterm alive — detach from DOM so React can remove container
       if (containerRef.current && xterm.element && containerRef.current.contains(xterm.element)) {
         try { containerRef.current.removeChild(xterm.element) } catch {}
       }

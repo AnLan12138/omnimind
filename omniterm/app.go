@@ -29,6 +29,38 @@ import (
 	ghsync "omnimind/internal/sync"
 )
 
+// ringBuf is a simple circular byte buffer for replaying recent output.
+type ringBuf struct {
+	buf  []byte
+	size int
+	pos  int
+	mu   sync.Mutex
+}
+
+func newRingBuf(size int) *ringBuf { return &ringBuf{buf: make([]byte, size), size: size} }
+
+func (rb *ringBuf) Write(p []byte) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	for _, b := range p {
+		rb.buf[rb.pos] = b
+		rb.pos = (rb.pos + 1) % rb.size
+	}
+}
+
+func (rb *ringBuf) Bytes() []byte {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	out := make([]byte, 0, rb.size)
+	for i := 0; i < rb.size; i++ {
+		b := rb.buf[(rb.pos+i)%rb.size]
+		if b != 0 {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 type ActiveConn struct {
 	ID       string
 	Client   protocol.ProtocolClient
@@ -36,7 +68,8 @@ type ActiveConn struct {
 	Recorder *filetransfer.Recorder
 	Ctx      context.Context
 	Cancel   context.CancelFunc
-	Latency  int64 // atomic, last measured RTT in milliseconds
+	Latency  int64    // atomic, last measured RTT in milliseconds
+	ReplayBuf *ringBuf // recent output buffer for terminal re-attach
 }
 
 // LatencyProber is implemented by clients that can measure RTT
@@ -211,8 +244,12 @@ func (a *App) Connect(connID string, sess session.Session) error {
 		connID = uuid.New().String()
 	}
 
+	// Ring buffer for terminal re-attach replay
+	rb := newRingBuf(1024 * 1024) // 1MB buffer
+
 	// Set up callbacks to push events to frontend
 	client.OnData(func(data []byte) {
+		rb.Write(data)
 		runtime.EventsEmit(a.ctx, "conn:"+connID+":data", string(data))
 	})
 	client.OnError(func(err error) {
@@ -256,10 +293,11 @@ func (a *App) Connect(connID string, sess session.Session) error {
 
 	a.connsMu.Lock()
 	a.conns[connID] = &ActiveConn{
-		ID:     connID,
-		Client: client,
-		Ctx:    ctx,
-		Cancel: cancel,
+		ID:        connID,
+		Client:    client,
+		ReplayBuf: rb,
+		Ctx:       ctx,
+		Cancel:    cancel,
 	}
 	a.connsMu.Unlock()
 
@@ -426,6 +464,26 @@ func (a *App) GetConnectionState(connID string) string {
 		return "disconnected"
 	}
 	return ac.Client.State().String()
+}
+
+// LogFrontend writes a frontend diagnostic message to the telnet log
+func (a *App) LogFrontend(msg string) {
+	f, err := os.OpenFile(os.TempDir()+"/omnimind_telnet.log", os.O_APPEND|os.O_WRONLY, 0644)
+	if err == nil {
+		f.WriteString(msg + "\n")
+		f.Close()
+	}
+}
+
+// GetConnectionBuffer returns recent output for replay on terminal re-attach
+func (a *App) GetConnectionBuffer(connID string) string {
+	a.connsMu.RLock()
+	ac := a.conns[connID]
+	a.connsMu.RUnlock()
+	if ac == nil || ac.ReplayBuf == nil {
+		return ""
+	}
+	return string(ac.ReplayBuf.Bytes())
 }
 
 func (a *App) getConn(connID string) *ActiveConn {
