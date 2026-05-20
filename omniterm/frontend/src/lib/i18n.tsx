@@ -7,7 +7,8 @@ type TranslationMap = Record<string, Record<Lang, string>>
 
 export const t: TranslationMap = {
   newSession: { en: 'New Session', zh: '新建会话' },
-  sessions: { en: 'Sessions', zh: '会话管理' },
+  sessions: { en: 'Devices', zh: '设备管理' },
+  activeSessions: { en: 'Active Sessions', zh: '活跃会话' },
   terminal: { en: 'Terminal', zh: '终端' },
   split: { en: 'Split View', zh: '分屏视图' },
   macros: { en: 'Macros', zh: '快捷指令' },

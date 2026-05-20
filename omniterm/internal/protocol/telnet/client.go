@@ -1,4 +1,18 @@
 package telnet
+/*
+ * client.go — Telnet 协议客户端（Go 后端）
+ * ==========================================
+ * 协议实现：
+ *   1. IAC 协商 — 被动响应 SUPPRESS_GO_AHEAD, TERMINAL_TYPE, NAWS
+ *      - ECHO 完全不碰（让服务器默认回显）
+ *      - 未知选项礼貌拒绝 WONT/DONT
+ *   2. 子协商 — TERMINAL_TYPE SEND → 回复 IS xterm-256color
+ *   3. CR/LF 规范化 — 裸 CR / CR+NUL / 裸 LF → CR+LF（华为等设备只发 CR）
+ *   4. 死循环修复 — IAC 包在 TCP 读边界截断时 break 只跳出 switch，加上 i=len(raw)
+ *   5. 单 readLoop goroutine — 每连接独立，数据流：conn.Read → 剥 IAC → onData 回调
+ *   6. 诊断日志 — DIAL/CONNECTED/SEND/RECV/DISCONNECT/READ LOOP EXIT 写入 %TEMP%/omnimind_telnet.log
+ * 依赖：net, crypto/tls, context, sync
+ */
 
 import (
 	"context"

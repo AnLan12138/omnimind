@@ -1,4 +1,20 @@
 package main
+/*
+ * app.go — Go 后端主文件（Wails 绑定）
+ * ==========================================
+ * 核心结构：
+ *   App.conns[connID] → ActiveConn{Client, SFTP, Recorder, Ctx, Cancel, ReplayBuf}
+ *
+ * 主要功能：
+ *   1. Connect() — 根据协议创建 Client(SSH/Telnet/Serial/RDP/VNC/FTP/MOSH)
+ *      - client.OnData → EventsEmit("conn:ID:data") 推送到前端
+ *      - ringBuf(1MB) 记录最近输出，供前端 GetConnectionBuffer() 回放
+ *   2. Disconnect() — 取消 context → 关闭连接 → 清理资源
+ *   3. Send() — 线程安全读写，connID 不存在时静默忽略
+ *   4. GetConnectionBuffer() — 返回 ringBuf 内容，用于终端重新挂载时回放
+ *   5. LogFrontend() — 前端诊断日志写入 telnet log 文件
+ *   6. autoReconnect() — 意外断连自动重连（5次）
+ */
 
 import (
 	"context"

@@ -1,5 +1,22 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
-import { Search } from 'lucide-react'
+/*
+ * App.tsx — 主应用组件（OmniMind 入口）
+ * ==========================================
+ * 布局结构：ActivityBar(左) | Sidebar(中) | Terminal区(右) | StatusBar(底)
+ *
+ * 核心职责：
+ *   1. 连接管理 — doConnect() 创建 Tab + 调用 Go 后端 Connect()
+ *   2. 会话数据流 — App 层注册 EventsOn（永不卸载），从全局 xterm Pool 取实例写入
+ *      - 数据缓冲：xterm 未就绪时 feedBuffer()，就绪后 flushBuffer()
+ *   3. 视图模式 — 所有 Terminal 始终 absolute 定位，零 display:none，零条件渲染
+ *      - 普通模式：单 Terminal 全屏，其他 visibility:hidden
+ *      - 分屏/广播：手动计算 top/left/width/height 实现网格布局
+ *   4. 快捷键 — App 层只处理 App 级快捷键（新建/关闭/切换标签/侧边栏/设置）
+ *      - 终端级快捷键（复制/粘贴/清屏等）由 xterm customKeyHandler 处理，防双击
+ *   5. 活跃会话面板 — 侧边栏顶部显示已连接设备列表 + 全部关闭按钮
+ *   6. 自动关闭分屏/广播 — 连接设备 < 2 时自动关闭并置灰按钮
+ */
+import { Search, X, Power } from 'lucide-react'
 import ActivityBar from './components/ActivityBar'
 import SessionSidebar from './components/SessionSidebar'
 import TabBar from './components/TabBar'
@@ -22,6 +39,7 @@ import MonitorPanel from './components/MonitorPanel'
 import logoImg from './assets/images/logo-universal.png'
 import { useI18n } from './lib/i18n'
 import { EventsOn } from '../wailsjs/runtime/runtime'
+import { getHighlighter } from './lib/KeywordHighlighter'
 import { registerShortcutAction, handleShortcutEvent, useShortcutStore } from './stores/shortcutStore'
 import { useSplitStore } from './stores/splitStore'
 
@@ -72,7 +90,10 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { handleShortcutEvent(e, useShortcutStore.getState().shortcuts) }
+    const h = (e: KeyboardEvent) => {
+      const appActs = ['newSession', 'closeTab', 'nextTab', 'prevTab', 'toggleSidebar', 'settings']
+      handleShortcutEvent(e, useShortcutStore.getState().shortcuts.filter(s => appActs.includes(s.id)))
+    }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [])
@@ -88,6 +109,8 @@ export default function App() {
 
   // ── Session data events at App level (never unmounts) ──
   const listenersRef = useRef(new Set<string>())
+  const hlRef = useRef(getHighlighter())
+  useEffect(() => { hlRef.current.updateConfig({ enabled: useConfigStore.getState().highlightEnabled, rules: useConfigStore.getState().highlightRules }) }, [useConfigStore(s => s.highlightEnabled), useConfigStore(s => s.highlightRules)])
   useEffect(() => {
     for (const t of useTabStore.getState().tabs) {
       if (listenersRef.current.has(t.connId)) continue
@@ -96,11 +119,12 @@ export default function App() {
       EventsOn('conn:' + cid + ':data', (d: string | Uint8Array) => {
         const xterm = getPoolXterm(cid)
         const raw = typeof d === 'string' ? d : new TextDecoder().decode(d)
+        const processed = hlRef.current.process(raw)
         if (xterm) {
-          xterm.write(raw)
+          xterm.write(processed || raw)
           try { xterm.refresh(0, xterm.rows) } catch {}
         } else {
-          feedBuffer(cid, raw)
+          feedBuffer(cid, processed || raw)
         }
       })
       EventsOn('conn:' + cid + ':state', (s: string) => { useTabStore.getState().updateTabState(cid, s) })
@@ -129,6 +153,15 @@ export default function App() {
     else { setSettingsTab('extensions'); setSettingsOpen(true) }
   }, [])
 
+  // Auto-close split/broadcast when connected devices drop below 2
+  const connectedCount = tabs.filter(t => t.state === 'connected').length
+  useEffect(() => {
+    if (connectedCount < 2) {
+      if (splitActive) toggleSplit()
+      if (broadcastActive) useBroadcastStore.getState().stop()
+    }
+  }, [connectedCount])
+
   const handleCloseAll = useCallback(async () => {
     for (const t of useTabStore.getState().tabs) {
       try { await window.go.main.App.Disconnect(t.connId) } catch {}
@@ -156,9 +189,12 @@ export default function App() {
         <ActivityBar
           activeView={activeView} sidebarVisible={activeView === 'sessions'}
           broadcastActive={broadcastActive} splitActive={splitActive}
+          connectedCount={connectedCount}
           onToggleBroadcast={() => {
             const store = useBroadcastStore.getState()
             if (store.active) { store.stop(); return }
+            // Mutex: close split if open
+            if (splitActive) toggleSplit()
             if (tabs.filter(t => t.state === 'connected').length < 2) { doToast(t('needMoreDevices')); return }
             store.start(tabs.filter(t => t.state === 'connected').map(t => t.connId))
           }}
@@ -168,6 +204,8 @@ export default function App() {
             else if (v === 'terminal') { setActiveView('terminal') }
             else if (v === 'settings') { setSettingsOpen(true); setActiveView('sessions') }
             else if (v === 'split') {
+              // Mutex: close broadcast if open
+              if (broadcastActive) useBroadcastStore.getState().stop()
               if (!splitActive && tabs.filter(t => t.state === 'connected').length < 2) { doToast(t('needMoreDevices')) }
               else { toggleSplit() }
             } else { setActiveView(activeView === v ? 'terminal' : v) }
@@ -181,6 +219,33 @@ export default function App() {
               <input type="text" placeholder="搜索..." value={sidebarSearch} onChange={e => setSidebarSearch(e.target.value)}
                 className="w-full h-7 pl-7 pr-2 bg-vscode-input border border-vscode-border rounded text-[11px] text-vscode-text placeholder-vscode-text-dim focus:outline-none focus:border-vscode-accent" />
             </div>
+            {/* Connected devices tabs — shown when activeView === 'connected' */}
+            {activeView === 'connected' && (
+              <div className="flex flex-col gap-1.5 px-2 py-2 shrink-0 border-b border-vscode-border">
+                {tabs.length > 0 && (
+                  <button onClick={handleCloseAll} title="关闭所有连接"
+                    className="flex items-center gap-2 h-8 px-3 text-[13px] rounded hover:bg-vscode-red/20 text-vscode-red transition-colors">
+                    <Power size={16} />
+                    <span>关闭所有连接</span>
+                  </button>
+                )}
+                {tabs.map(tab => (
+                  <div key={tab.id}
+                    onClick={() => { useTabStore.getState().setActive(tab.id); setTimeout(() => getPoolXterm(tab.connId)?.focus(), 100) }}
+                    className={`group flex items-center gap-2 h-8 px-3 cursor-pointer text-[13px] rounded shrink-0 transition-colors
+                      ${tab.active ? 'bg-vscode-accent/20 text-white' : 'text-vscode-text-muted hover:bg-vscode-hover'}`}>
+                    <span className="w-2 h-2 rounded-full shrink-0"
+                      style={{ background: tab.state === 'connected' ? '#4ec9b0' : tab.state === 'connecting' ? '#cca700' : '#6a6a6a' }} />
+                    <span className="truncate flex-1">{tab.title}</span>
+                    <button onClick={e => { e.stopPropagation(); handleDisconnect(tab.connId) }}
+                      className="p-1 rounded hover:bg-vscode-red/20 opacity-0 group-hover:opacity-100">
+                      <X size={14} className="text-vscode-red" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="flex-1 min-h-0 overflow-hidden">
               {activeView === 'sessions' && (
                 <SessionSidebar searchTerm={sidebarSearch} onDoubleClick={handleDoubleClick}
@@ -205,7 +270,7 @@ export default function App() {
         )}
 
         <div className="flex flex-col flex-1 min-w-0">
-          <TabBar onCloneTab={handleCloneTab} onCloseAll={handleCloseAll} />
+          <TabBar onCloneTab={handleCloneTab} />
 
           <div className="flex-1 min-h-0">
             {tabs.length === 0 ? (
@@ -247,7 +312,6 @@ export default function App() {
                         border: inGrid ? (broadcastActive ? '2px solid rgba(86,156,214,0.5)' : '1px solid #3c3c3c') : undefined,
                         borderRadius: inGrid ? 4 : 0,
                         overflow: 'hidden',
-                        background: inGrid ? '#1e1e1e' : undefined,
                         boxSizing: 'border-box',
                       }}>
                       {/* Always present — height 0 when hidden */}
@@ -281,7 +345,8 @@ export default function App() {
           </div>
         </div>
       </div>
-      <StatusBar onTogglePanel={() => setPanelVisible(!panelVisible)} panelVisible={panelVisible} />
+      <StatusBar onTogglePanel={() => setPanelVisible(!panelVisible)} panelVisible={panelVisible}
+        onMonitor={() => setActiveView(activeView === 'monitor' ? 'terminal' : 'monitor')} />
       {dialogOpen && <SessionDialog session={editingSession} groupId={defaultGroupId} onClose={() => setDialogOpen(false)} onSaved={loadSessions} onConnect={doConnect} />}
       {settingsOpen && <SettingsDialog onClose={() => { setSettingsOpen(false); setSettingsTab(undefined) }} initialTab={settingsTab} />}
       {toastMsg && (

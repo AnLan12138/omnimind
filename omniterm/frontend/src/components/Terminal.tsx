@@ -1,4 +1,20 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
+/*
+ * Terminal.tsx — 终端组件（xterm.js 封装）
+ * ==========================================
+ * 核心架构：
+ *   1. 全局 xterm Pool — xterm 实例永不销毁，跨 React 挂载/卸载存活
+ *      - 首次挂载：创建 xterm 存入 pool
+ *      - 卸载时：从 DOM 分离但不 dispose，保留在 pool
+ *      - 重新挂载：从 pool 取出，appendChild 到新容器
+ *      - 真正断连时：disposeTerminal() 清理
+ *   2. 数据流：onData → window.go.main.App.Send → Go 后端 → Telnet/SSH 设备
+ *      回显路径：EventsEmit("conn:ID:data") → App.tsx 的 EventsOn 接收 → 高亮处理 → xterm.write()
+ *   3. ResizeObserver 去抖 80ms + 最小 100px 保护 — 防止模式切换时 xterm 崩
+ *   4. WebGL 已禁用 — 模式切换时容器 resize 导致 WebGL 上下文丢失
+ *   5. 模式切换聚焦 — 监听 broadcastActive/splitActive 变化，double rAF 后 focus
+ * 依赖：@xterm/xterm, FitAddon, SearchAddon, Unicode11Addon, Wails Events, Zustand
+ */
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -240,7 +256,7 @@ export default function Terminal({ connId, onDisconnect }: Props) {
         </div>
       )}
       {toast && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[200] px-4 py-2 bg-vscode-accent text-white rounded shadow-lg text-[12px] animate-pulse">{toast}</div>
+        <div className="fixed top-4 right-4 z-[200] px-4 py-2 bg-vscode-accent text-white rounded shadow-lg text-[12px] animate-pulse">{toast}</div>
       )}
     </div>
   )

@@ -1,14 +1,25 @@
 import { useState, useRef } from 'react'
-import { X, Pencil, Copy, XCircle } from 'lucide-react'
+/*
+ * TabBar.tsx — 终端顶部标签栏
+ * ==========================================
+ * 特性：
+ *   - 标签过多时自动缩小（shrink）如浏览器标签
+ *   - 双击标签关闭设备
+ *   - 点击标签切换设备并自动聚焦对应 xterm（getPoolXterm + focus）
+ *   - 拖拽重排序标签
+ *   - 右键菜单：克隆标签 / 关闭
+ */
+import { X, Pencil, Copy } from 'lucide-react'
 import { useTabStore, type Tab } from '../stores/tabStore'
+import { getPoolXterm } from './Terminal'
 
 const stateColors: Record<string, string> = {
   connected: '#4ec9b0', connecting: '#cca700', reconnecting: '#cca700', error: '#f44747', disconnected: '#6a6a6a',
 }
 
-interface Props { onCloneTab?: (tab: Tab) => void; onCloseAll?: () => void }
+interface Props { onCloneTab?: (tab: Tab) => void }
 
-export default function TabBar({ onCloneTab, onCloseAll }: Props) {
+export default function TabBar({ onCloneTab }: Props) {
   const { tabs, activeTabId, setActive, removeTab, reorderTabs } = useTabStore()
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [ctxTab, setCtxTab] = useState<{ tab: Tab; x: number; y: number } | null>(null)
@@ -16,42 +27,43 @@ export default function TabBar({ onCloneTab, onCloseAll }: Props) {
   const handleDragStart = (idx: number) => setDragIdx(idx)
   const handleDragOver = (e: React.DragEvent, idx: number) => {
     e.preventDefault()
-    if (dragIdx !== null && dragIdx !== idx) {
-      reorderTabs(dragIdx, idx)
-      setDragIdx(idx)
-    }
+    if (dragIdx !== null && dragIdx !== idx) { reorderTabs(dragIdx, idx); setDragIdx(idx) }
   }
   const handleDragEnd = () => setDragIdx(null)
   const handleCtx = (e: React.MouseEvent, tab: Tab) => { e.preventDefault(); setCtxTab({ tab, x: e.clientX, y: e.clientY }) }
 
+  const handleTabClick = (tab: Tab) => {
+    setActive(tab.id)
+    // Auto-focus the xterm for this tab
+    setTimeout(() => {
+      const xterm = getPoolXterm(tab.connId)
+      if (xterm) xterm.focus()
+    }, 100)
+  }
+
   return (
     <>
-      <div className="flex items-center h-9 bg-vscode-tab-inactive overflow-x-auto" onClick={() => setCtxTab(null)}>
+      <div className="flex items-center h-9 bg-vscode-tab-inactive overflow-hidden" onClick={() => setCtxTab(null)}>
         {tabs.map((tab, idx) => (
           <div key={tab.id}
             draggable
             onDragStart={() => handleDragStart(idx)}
             onDragOver={e => handleDragOver(e, idx)}
             onDragEnd={handleDragEnd}
-            onClick={() => setActive(tab.id)}
+            onClick={() => handleTabClick(tab)}
+            onDoubleClick={e => { e.stopPropagation(); removeTab(tab.id) }}
             onContextMenu={e => handleCtx(e, tab)}
-            className={`group flex items-center gap-1.5 h-9 px-3 cursor-pointer text-[12px] border-r border-vscode-border select-none shrink-0 transition-colors
+            className={`group flex items-center gap-1.5 h-9 px-2 cursor-pointer text-[12px] border-r border-vscode-border select-none shrink transition-colors min-w-[40px]
               ${tab.active ? 'bg-vscode-tab-active text-white border-t border-t-vscode-accent border-b-transparent -mb-px' : 'text-vscode-text-muted hover:bg-vscode-hover border-t border-t-transparent'}
               ${dragIdx === idx ? 'opacity-50' : ''}`}>
             <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: stateColors[tab.state] || stateColors.disconnected }} />
             <span className="truncate max-w-[120px]">{tab.title}</span>
             <button onClick={e => { e.stopPropagation(); removeTab(tab.id) }}
-              className="p-0.5 rounded hover:bg-vscode-hover opacity-0 group-hover:opacity-100 ml-0.5">
-              <X size={10} />
+              className="p-1 rounded hover:bg-vscode-red/20 opacity-0 group-hover:opacity-100 ml-0.5">
+              <X size={14} />
             </button>
           </div>
         ))}
-        {tabs.length > 0 && onCloseAll && (
-          <button onClick={onCloseAll} title="关闭所有连接"
-            className="flex items-center justify-center w-8 h-8 ml-auto mr-1 shrink-0 rounded hover:bg-vscode-red/20 text-vscode-text-muted hover:text-vscode-red transition-colors">
-            <XCircle size={16} />
-          </button>
-        )}
       </div>
 
       {ctxTab && (
