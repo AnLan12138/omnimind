@@ -40,6 +40,7 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['default']))
   const [ctx, setCtx] = useState<CtxMenu | null>(null)
   const [dialog, setDialog] = useState<{ type: string; group?: Group; parentId?: string } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<{ type: 'device' | 'group'; item: Device | Group } | null>(null)
   const [dName, setDName] = useState('')
   const [devDialog, setDevDialog] = useState<{ type: 'edit'; groupId: string; device: Device } | null>(null)
   const [devName, setDevName] = useState(''); const [devHost, setDevHost] = useState('')
@@ -93,7 +94,8 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
       folderId: '', sortOrder: 0, createdAt: now, updatedAt: now,
     }))
   }
-  const deleteDevice = (id: string) => { setDevices(devices.filter(d => d.id !== id)); setCtx(null) }
+  const deleteDevice = (id: string) => { setDevices(devices.filter(d => d.id !== id)); setCtx(null); setConfirmDelete(null) }
+  const confirmDeleteDevice = (device: Device) => { setConfirmDelete({ type: 'device', item: device }); setCtx(null) }
   const saveDevice = () => {
     if (!devName.trim() || !devHost.trim() || !devDialog) return
     setDevices(devices.map(d => d.id === devDialog.device.id ? { ...d, name: devName.trim(), host: devHost.trim(), port: parseInt(devPort) || 22, username: devUser.trim(), protocol: devProto } : d))
@@ -125,8 +127,9 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
     collect(g.id)
     setGroups(groups.filter(x => !ids.has(x.id)))
     setDevices(devices.map(d => ids.has(d.groupId) ? { ...d, groupId: 'default' } : d))
-    setCtx(null)
+    setCtx(null); setConfirmDelete(null)
   }
+  const confirmDeleteGroup = (group: Group) => { setConfirmDelete({ type: 'group', item: group }); setCtx(null) }
 
   // Export/Import — NDJSON (one JSON object per line), per-group export
   const exportGroup = (groupId: string) => {
@@ -205,7 +208,7 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
           </button>
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pr-2">
             {!isDefault && <button onClick={() => { setDName(g.name); setDialog({ type: 'rename', group: g }) }} className="p-0.5 hover:bg-vscode-hover rounded"><Pencil size={10} className="text-vscode-text-muted" /></button>}
-            {!isDefault && <button onClick={() => deleteGroup(g)} className="p-0.5 hover:bg-vscode-hover rounded"><Trash2 size={10} className="text-vscode-text-muted hover:text-vscode-red" /></button>}
+            {!isDefault && <button onClick={() => confirmDeleteGroup(g)} className="p-0.5 hover:bg-vscode-hover rounded"><Trash2 size={10} className="text-vscode-text-muted hover:text-vscode-red" /></button>}
           </div>
         </div>
         {ex && (
@@ -248,7 +251,7 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
                   <span className="flex items-center gap-0.5 opacity-0 group-hover/item:opacity-100">
                     <button onClick={e => { e.stopPropagation(); openEditDevice(d) }}
                       className="p-0.5 hover:bg-vscode-hover rounded"><Pencil size={10} className="text-vscode-text-muted" /></button>
-                    <button onClick={e => { e.stopPropagation(); deleteDevice(d.id) }}
+                    <button onClick={e => { e.stopPropagation(); confirmDeleteDevice(d) }}
                       className="p-0.5 hover:bg-vscode-hover rounded"><Trash2 size={10} className="text-vscode-text-muted hover:text-vscode-red" /></button>
                   </span>
                 </div>
@@ -297,7 +300,7 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
                 telnetTermType: '', baudRate: 115200, dataBits: 8, stopBits: 1.0, parity: 'none', flowControl: 'none',
                 folderId: '', sortOrder: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
               })); setCtx(null) }} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text"><Pencil size={12} /> 编辑</button>
-              <button onClick={() => deleteDevice(ctx.device!.id)} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-red"><Trash2 size={12} /> 删除</button>
+              <button onClick={() => confirmDeleteDevice(ctx.device!)} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-red"><Trash2 size={12} /> 删除</button>
             </>
           )}
           {ctx.type === 'group' && ctx.group && (
@@ -307,7 +310,7 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
               {ctx.group.id !== 'default' && <button onClick={() => { setDName(ctx.group!.name); setDialog({ type: 'rename', group: ctx.group }) }} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text"><Pencil size={12} /> 重命名</button>}
               <button onClick={() => exportGroup(ctx.group!.id)} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text"><Download size={12} /> 导出此分组</button>
               <button onClick={() => { importGroupRef.current = ctx.group!.id; fileRef.current?.click(); setCtx(null) }} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text"><Upload size={12} /> 导入到此分组</button>
-              {ctx.group.id !== 'default' && <button onClick={() => deleteGroup(ctx.group!)} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-red"><Trash2 size={12} /> 删除</button>}
+              {ctx.group.id !== 'default' && <button onClick={() => confirmDeleteGroup(ctx.group!)} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-red"><Trash2 size={12} /> 删除</button>}
             </>
           )}
         </div>
@@ -339,6 +342,18 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
             { label: '用户名', value: devUser, set: setDevUser, placeholder: 'root' },
           ]}
           onConfirm={saveDevice} onCancel={() => setDevDialog(null)} />
+      )}
+      {confirmDelete?.type === 'device' && (
+        <FormDialog title="删除设备" danger confirmLabel="删除"
+          fields={[{ label: '', value: `确定删除设备 "${(confirmDelete.item as Device).name}" 吗？此操作不可恢复。`, set: () => {}, displayOnly: true }]}
+          onConfirm={() => deleteDevice((confirmDelete.item as Device).id)}
+          onCancel={() => setConfirmDelete(null)} />
+      )}
+      {confirmDelete?.type === 'group' && (
+        <FormDialog title="删除分组" danger confirmLabel="删除"
+          fields={[{ label: '', value: `确定删除分组 "${(confirmDelete.item as Group).name}" 吗？所有子分组将一起删除，设备会移到默认分组。`, set: () => {}, displayOnly: true }]}
+          onConfirm={() => deleteGroup(confirmDelete.item as Group)}
+          onCancel={() => setConfirmDelete(null)} />
       )}
     </div>
   )

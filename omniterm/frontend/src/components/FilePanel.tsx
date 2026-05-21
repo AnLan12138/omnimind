@@ -226,7 +226,7 @@ export default function FilePanel({ connId, searchTerm = '', onClose }: Props) {
             setTimeout(() => setTransferring({ active: false, text: '', pct: 0 }), 2500)
           } catch {}
         }} disabled={selected.size === 0} className="p-1 hover:bg-vscode-hover rounded disabled:opacity-30" title="Download"><Download size={17} className="text-vscode-text-muted" /></button>
-        <button onClick={() => selected.size > 0 && op.delete()} disabled={selected.size === 0} className="p-1 hover:bg-red-500/10 rounded disabled:opacity-30"><Trash2 size={17} className={selected.size > 0 ? 'text-vscode-red' : 'text-vscode-text-muted'} /></button>
+        <button onClick={() => { if (selected.size > 0) setDialog({ type: 'delete' }) }} disabled={selected.size === 0} className="p-1 hover:bg-red-500/10 rounded disabled:opacity-30"><Trash2 size={17} className={selected.size > 0 ? 'text-vscode-red' : 'text-vscode-text-muted'} /></button>
         <button onClick={() => { setDName('newfile.txt'); setDialog({ type: 'newFile' }) }} className="p-1 hover:bg-vscode-hover rounded"><FilePlus size={17} className="text-vscode-text-muted" /></button>
         <button onClick={() => { setDName(''); setDialog({ type: 'newFolder' }) }} className="p-1 hover:bg-vscode-hover rounded"><Plus size={17} className="text-vscode-text-muted" /></button>
       </div>

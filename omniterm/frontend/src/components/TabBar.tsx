@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 /*
  * TabBar.tsx — 终端顶部标签栏
  * ==========================================
@@ -9,9 +9,10 @@ import { useState, useRef } from 'react'
  *   - 拖拽重排序标签
  *   - 右键菜单：克隆标签 / 关闭
  */
-import { X, Pencil, Copy } from 'lucide-react'
+import { X, Copy } from 'lucide-react'
 import { useTabStore, type Tab } from '../stores/tabStore'
 import { getPoolXterm } from './Terminal'
+import FormDialog from './FormDialog'
 
 const stateColors: Record<string, string> = {
   connected: '#4ec9b0', connecting: '#cca700', reconnecting: '#cca700', error: '#f44747', disconnected: '#6a6a6a',
@@ -23,6 +24,7 @@ export default function TabBar({ onCloneTab }: Props) {
   const { tabs, activeTabId, setActive, removeTab, reorderTabs } = useTabStore()
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [ctxTab, setCtxTab] = useState<{ tab: Tab; x: number; y: number } | null>(null)
+  const [confirmClose, setConfirmClose] = useState<Tab | null>(null)
 
   const handleDragStart = (idx: number) => setDragIdx(idx)
   const handleDragOver = (e: React.DragEvent, idx: number) => {
@@ -51,14 +53,14 @@ export default function TabBar({ onCloneTab }: Props) {
             onDragOver={e => handleDragOver(e, idx)}
             onDragEnd={handleDragEnd}
             onClick={() => handleTabClick(tab)}
-            onDoubleClick={e => { e.stopPropagation(); removeTab(tab.id) }}
+            onDoubleClick={e => { e.stopPropagation(); setConfirmClose(tab) }}
             onContextMenu={e => handleCtx(e, tab)}
             className={`group flex items-center gap-1.5 h-9 px-2 cursor-pointer text-[12px] border-r border-vscode-border select-none shrink transition-colors min-w-[40px]
               ${tab.active ? 'bg-vscode-tab-active text-white border-t border-t-vscode-accent border-b-transparent -mb-px' : 'text-vscode-text-muted hover:bg-vscode-hover border-t border-t-transparent'}
               ${dragIdx === idx ? 'opacity-50' : ''}`}>
             <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: stateColors[tab.state] || stateColors.disconnected }} />
             <span className="truncate max-w-[120px]">{tab.title}</span>
-            <button onClick={e => { e.stopPropagation(); removeTab(tab.id) }}
+            <button onClick={e => { e.stopPropagation(); setConfirmClose(tab) }}
               className="p-1 rounded hover:bg-vscode-red/20 opacity-0 group-hover:opacity-100 ml-0.5">
               <X size={14} />
             </button>
@@ -73,11 +75,18 @@ export default function TabBar({ onCloneTab }: Props) {
             className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">
             <Copy size={11} /> Clone Tab
           </button>
-          <button onClick={() => { removeTab(ctxTab.tab.id); setCtxTab(null) }}
+          <button onClick={() => { const t = ctxTab.tab; setCtxTab(null); setConfirmClose(t) }}
             className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-red">
             <X size={11} /> Close
           </button>
         </div>
+      )}
+
+      {confirmClose && (
+        <FormDialog title="关闭标签" danger confirmLabel="关闭"
+          fields={[{ label: '', value: `确定关闭 "${confirmClose.title}" 吗？未保存的数据将丢失。`, set: () => {}, displayOnly: true }]}
+          onConfirm={() => { removeTab(confirmClose.id); setConfirmClose(null) }}
+          onCancel={() => setConfirmClose(null)} />
       )}
     </>
   )

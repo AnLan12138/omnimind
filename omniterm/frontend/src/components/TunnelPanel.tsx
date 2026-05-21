@@ -21,6 +21,7 @@ export default function TunnelPanel({ searchTerm, onClose }: Props) {
   const [localAddr, setLocalAddr] = useState('')
   const [remoteAddr, setRemoteAddr] = useState('')
   const [connId, setConnId] = useState(connectedTabs[0]?.connId || '')
+  const [confirmStop, setConfirmStop] = useState<TunnelInfo | null>(null)
 
   const startTunnel = async () => {
     if (!connId || !localAddr) return
@@ -72,7 +73,7 @@ export default function TunnelPanel({ searchTerm, onClose }: Props) {
                 {TYPE_LABELS[t.ttype]} · {t.status === 'running' ? <span className="text-[#4ec9b0]">运行中</span> : t.status}
               </div>
             </div>
-            <button onClick={() => stopTunnel(t)} className="p-1 hover:bg-vscode-hover rounded">
+            <button onClick={() => setConfirmStop(t)} className="p-1 hover:bg-vscode-hover rounded">
               <Square size={12} className="text-vscode-red" />
             </button>
           </div>
@@ -91,6 +92,13 @@ export default function TunnelPanel({ searchTerm, onClose }: Props) {
             ...(ttype !== 2 ? [{ label: '远程地址 (host:port)', value: remoteAddr, set: setRemoteAddr, placeholder: 'localhost:80' }] : []),
           ]}
           onConfirm={startTunnel} onCancel={() => setDialog(false)} />
+      )}
+
+      {confirmStop && (
+        <FormDialog title="停止隧道" danger confirmLabel="停止"
+          fields={[{ label: '', value: `确定停止隧道 "${TYPE_LABELS[confirmStop.ttype]}" 吗？`, set: () => {}, displayOnly: true }]}
+          onConfirm={() => { stopTunnel(confirmStop); setConfirmStop(null) }}
+          onCancel={() => setConfirmStop(null)} />
       )}
     </div>
   )

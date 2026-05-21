@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { X, Monitor, MonitorPlay, Computer, Wifi, Cable } from 'lucide-react'
+import FormDialog from './FormDialog'
 import { session } from '../../wailsjs/go/models'
 import { SaveSession, DeleteSession } from '../../wailsjs/go/main/App'
 import { useI18n } from '../lib/i18n'
@@ -59,6 +60,7 @@ export default function SessionDialog({ session: editSession, groupId = 'default
   const [folderId, setFolderId] = useState('')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -277,7 +279,7 @@ export default function SessionDialog({ session: editSession, groupId = 'default
         <div className="flex items-center justify-between px-4 h-10 border-t border-vscode-border">
           <div>
             {editSession && (
-              <button onClick={handleDelete}
+              <button onClick={() => setConfirmDelete(true)}
                 className="px-3 h-7 text-[12px] text-vscode-red hover:bg-red-500/10 rounded transition-colors">
                 {t('deleteSession')}
               </button>
@@ -295,6 +297,16 @@ export default function SessionDialog({ session: editSession, groupId = 'default
           </div>
         </div>
       </div>
+      {confirmDelete && editSession && (
+        <FormDialog
+          title={t('deleteSession')}
+          danger
+          confirmLabel={t('delete')}
+          fields={[{ label: '', value: `确定删除会话 "${editSession.name}" 吗？此操作不可恢复。`, set: () => {}, displayOnly: true }]}
+          onConfirm={handleDelete}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      )}
     </div>
   )
 }
