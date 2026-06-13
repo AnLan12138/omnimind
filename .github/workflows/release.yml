@@ -61,7 +61,9 @@ jobs:
 
       - name: Install Linux dependencies
         if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev gcc build-essential pkg-config libcanberra-gtk3-module
 
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
@@ -87,7 +89,9 @@ jobs:
 
       - name: Rename Linux binary
         if: matrix.os == 'linux'
-        run: mv "build/bin/omnimind" "build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}"
+        run: |
+          mv build/bin/omnimind "build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}" || \
+          cp "$(find build/bin -type f -not -path '*app*' | head -1)" "build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}"
         working-directory: omniterm
 
       - name: Package NSIS (Windows)
