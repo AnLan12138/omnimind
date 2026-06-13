@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.2.0)"
+        required: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-latest
+            arch: amd64
+            ext: .exe
+            mime: application/x-msdownload
+          - os: linux
+            runner: ubuntu-latest
+            arch: amd64
+            ext: ""
+            mime: application/octet-stream
+          - os: darwin
+            runner: macos-latest
+            arch: amd64
+            ext: ""
+            mime: application/octet-stream
+          - os: darwin
+            runner: macos-latest
+            arch: arm64
+            ext: ""
+            mime: application/octet-stream
+
+    defaults:
+      run:
+        working-directory: omniterm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: omniterm/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: omniterm/frontend/package-lock.json
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: omniterm/frontend
+
+      - name: Build (${{ matrix.os }}/${{ matrix.arch }})
+        run: wails build -platform ${{ matrix.os }}/${{ matrix.arch }} -o "OmniMind-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows'
+        run: wails build -platform ${{ matrix.os }}/${{ matrix.arch }} -nsis -o "OmniMind-windows-${{ matrix.arch }}${{ matrix.ext }}"
+        continue-on-error: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmniMind-${{ matrix.os }}-${{ matrix.arch }}
+          path: omniterm/build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          if-no-files-found: error
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: omniterm/build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
