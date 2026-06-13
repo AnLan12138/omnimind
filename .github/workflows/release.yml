@@ -15,27 +15,35 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.os }} (${{ matrix.arch }})
+    name: Build ${{ matrix.label }} (${{ matrix.arch_name }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows
+          - label: Windows
+            os: windows
             runner: windows-latest
             arch: amd64
+            arch_name: x64
             ext: .exe
-          - os: linux
+          - label: Linux
+            os: linux
             runner: ubuntu-22.04
             arch: amd64
+            arch_name: x64
             ext: ""
-          - os: darwin
+          - label: macOS-Intel
+            os: darwin
             runner: macos-latest
             arch: amd64
+            arch_name: x64
             ext: ""
-          - os: darwin
+          - label: macOS-AppleSilicon
+            os: darwin
             runner: macos-latest
             arch: arm64
+            arch_name: arm64
             ext: ""
 
     defaults:
@@ -72,26 +80,26 @@ jobs:
         run: npm ci
         working-directory: omniterm/frontend
 
-      - name: Build (${{ matrix.os }}/${{ matrix.arch }})
+      - name: Build (${{ matrix.label }})
         run: wails build -platform ${{ matrix.os }}/${{ matrix.arch }}
 
       - name: Rename macOS binary
         if: runner.os == 'macOS'
         run: |
-          cp build/bin/omnimind.app/Contents/MacOS/OmniMind "build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}"
-          chmod +x "build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}"
+          cp build/bin/omnimind.app/Contents/MacOS/OmniMind "build/bin/OmniMind-${{ matrix.label }}-${{ matrix.arch_name }}"
+          chmod +x "build/bin/OmniMind-${{ matrix.label }}-${{ matrix.arch_name }}"
         working-directory: omniterm
 
       - name: Rename Windows binary
         if: matrix.os == 'windows'
-        run: mv "build/bin/OmniMind.exe" "build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}.exe"
+        run: mv "build/bin/OmniMind.exe" "build/bin/OmniMind-${{ matrix.label }}-${{ matrix.arch_name }}.exe"
         working-directory: omniterm
 
       - name: Rename Linux binary
         if: matrix.os == 'linux'
         run: |
-          mv build/bin/omnimind "build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}" || \
-          cp "$(find build/bin -type f -not -path '*app*' | head -1)" "build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}"
+          mv build/bin/omnimind "build/bin/OmniMind-${{ matrix.label }}-${{ matrix.arch_name }}" || \
+          cp "$(find build/bin -type f -not -path '*app*' | head -1)" "build/bin/OmniMind-${{ matrix.label }}-${{ matrix.arch_name }}"
         working-directory: omniterm
 
       - name: Package NSIS (Windows)
@@ -103,14 +111,14 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OmniMind-${{ matrix.os }}-${{ matrix.arch }}
-          path: omniterm/build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          name: OmniMind-${{ matrix.label }}-${{ matrix.arch_name }}
+          path: omniterm/build/bin/OmniMind-${{ matrix.label }}-${{ matrix.arch_name }}${{ matrix.ext }}
           if-no-files-found: error
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: omniterm/build/bin/OmniMind-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          files: omniterm/build/bin/OmniMind-${{ matrix.label }}-${{ matrix.arch_name }}${{ matrix.ext }}
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
