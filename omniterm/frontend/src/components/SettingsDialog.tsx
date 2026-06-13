@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
-import { X, Monitor, Keyboard, Palette, Shield, Info, Check, Download, Loader2, Puzzle, FolderOpen, Cloud, CloudUpload, CloudDownload, Eye, EyeOff } from 'lucide-react'
+import { X, Monitor, Keyboard, Palette, Shield, Info, Check, Download, Loader2, Puzzle, FolderOpen, Cloud, CloudUpload, CloudDownload, Eye, EyeOff, Brain, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react'
 import { useThemeStore, THEMES } from '../stores/themeStore'
 import { useConfigStore, type AppSettings } from '../stores/configStore'
 import { useExtensionStore } from '../stores/extensionStore'
+import { useAIStore, PROVIDER_PRESETS, getPreset, type AIProvider } from '../stores/aiStore'
 import { useI18n } from '../lib/i18n'
+import { ai } from '../../wailsjs/go/models'
 import { CheckForUpdate, InstallUpdate, PickExecutable } from '../../wailsjs/go/main/App'
 import { useShortcutStore } from '../stores/shortcutStore'
 import { PRESET_RULES, SGR, type HighlightRule } from '../lib/KeywordHighlighter'
@@ -56,6 +58,7 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
   const tabs = [
     { id: 'appearance', icon: Palette, label: t('appearance') },
     { id: 'terminal', icon: Monitor, label: t('terminalTab') },
+    { id: 'ai', icon: Brain, label: 'AI' },
     { id: 'extensions', icon: Puzzle, label: t('extensions') },
     { id: 'shortcuts', icon: Keyboard, label: t('shortcuts') },
     { id: 'security', icon: Shield, label: t('security') },
@@ -93,6 +96,7 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
 
   const apply = () => {
     config.update({ terminalFontSize: fontSize, terminalFontFamily: fontFamily, cursorStyle, scrollback, terminalTheme: themePick, accentColor, uiScale, lang, highlightEnabled, highlightRules })
+    // AI 配置在 AISettings 中即时保存，无需在此处处理
     setTheme(themePick); setSaved(true); setTimeout(() => setSaved(false), 1500)
   }
   const cancel = () => {
@@ -372,6 +376,8 @@ export default function SettingsDialog({ onClose, initialTab }: Props) {
               </div>
             )}
 
+            {active === 'ai' && <AISettings />}
+
             {active === 'sync' && <SyncSettings />}
 
             {active === 'about' && (
@@ -613,6 +619,261 @@ function ShortcutEditor() {
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════
+//  AISettings — Hermes 风格: 选厂商 + 填 Key 即用
+//  高级选项 (模型/URL/SystemPrompt) 折叠在下方
+// ══════════════════════════════════════════
+
+function AISettings() {
+  const aiConfig = useAIStore(s => s.config)
+  const setAIConfig = useAIStore(s => s.setConfig)
+
+  const [provider, setProvider] = useState<AIProvider>(aiConfig.provider)
+  const [apiKey, setApiKey] = useState(aiConfig.apiKey)
+  const [model, setModel] = useState(aiConfig.model)
+  const [baseURL, setBaseURL] = useState(aiConfig.baseURL)
+  const [systemPrompt, setSystemPrompt] = useState(aiConfig.systemPrompt)
+  const [showKey, setShowKey] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<'idle' | 'ok' | 'fail'>('idle')
+  const [testMsg, setTestMsg] = useState('')
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const preset = getPreset(provider)
+
+  // 切换厂商时自动填入默认模型和 URL
+  const handleProviderChange = (p: AIProvider) => {
+    setProvider(p)
+    const pr = getPreset(p)
+    if (pr.defaultModel) setModel(pr.defaultModel)
+    if (pr.defaultBaseURL) setBaseURL(pr.defaultBaseURL)
+    // 即时保存
+    save(p, apiKey, pr.defaultModel || model, pr.defaultBaseURL || baseURL, systemPrompt)
+  }
+
+  const save = (p: AIProvider, key: string, m: string, url: string, sp: string) => {
+    setAIConfig({ provider: p, apiKey: key, model: m, baseURL: url, systemPrompt: sp })
+    setSaved(true)
+    setTimeout(() => setSaved(false), 1200)
+  }
+
+  const handleKeyChange = (v: string) => {
+    setApiKey(v)
+    save(provider, v, model, baseURL, systemPrompt)
+  }
+
+  const handleModelChange = (v: string) => {
+    setModel(v)
+    save(provider, apiKey, v, baseURL, systemPrompt)
+  }
+
+  const handleURLChange = (v: string) => {
+    setBaseURL(v)
+    save(provider, apiKey, model, v, systemPrompt)
+  }
+
+  const handlePromptChange = (v: string) => {
+    setSystemPrompt(v)
+    save(provider, apiKey, model, baseURL, v)
+  }
+
+  const handleTest = async () => {
+    setTesting(true)
+    setTestResult('idle')
+    setTestMsg('')
+    try {
+      const { AIChatStream } = await import('../../wailsjs/go/main/App')
+      await AIChatStream('test', [
+        ai.Message.createFrom({ role: 'user', content: '你好，请回复"连接成功"。' }),
+      ], ai.ClientConfig.createFrom({
+        provider, apiKey, model, baseURL,
+      }))
+      setTestResult('ok')
+    } catch (e: any) {
+      setTestResult('fail')
+      setTestMsg(e?.message || '连接失败')
+    }
+    setTesting(false)
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* ── 1. 厂商选择 ── */}
+      <div>
+        <label className="block text-[12px] font-semibold text-vscode-text mb-2.5 uppercase tracking-wider">
+          服务商
+        </label>
+        <div className="grid grid-cols-5 gap-2">
+          {PROVIDER_PRESETS.map(p => {
+            const active = provider === p.id
+            return (
+              <button
+                key={p.id}
+                onClick={() => handleProviderChange(p.id)}
+                className={`relative flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all duration-200
+                  ${active
+                    ? `${p.borderClass} bg-vscode-selection shadow-md`
+                    : 'border-vscode-border/50 hover:border-vscode-border hover:bg-vscode-hover/50'
+                  }`}
+              >
+                {/* 品牌色圆点 */}
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-[10px] font-bold"
+                  style={{ backgroundColor: p.color }}
+                >
+                  {p.name.slice(0, 2).toUpperCase()}
+                </div>
+                <span className={`text-[11px] font-medium leading-tight text-center ${active ? 'text-white' : 'text-vscode-text-muted'}`}>
+                  {p.name}
+                </span>
+                {active && (
+                  <div className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-vscode-accent rounded-full flex items-center justify-center">
+                    <Check size={10} className="text-white" />
+                  </div>
+                )}
+              </button>
+            )
+          })}
+        </div>
+        {/* 当前选中厂商的模型提示 */}
+        <p className="text-[10px] text-vscode-text-dim mt-2">
+          默认模型: <span className="text-vscode-text-muted font-mono">{preset.defaultModel || '需手动填写'}</span>
+          <span className="mx-1.5">·</span>
+          API: <span className="text-vscode-text-muted font-mono text-[9px]">{preset.defaultBaseURL || '需手动填写'}</span>
+        </p>
+      </div>
+
+      {/* ── 2. API Key ── */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-[12px] font-semibold text-vscode-text uppercase tracking-wider">
+            API Key
+          </label>
+          <div className="flex items-center gap-2">
+            {saved && (
+              <span className="text-[10px] text-vscode-green flex items-center gap-0.5">
+                <Check size={10} /> 已保存
+              </span>
+            )}
+            {preset.getKeyURL && (
+              <a
+                href={preset.getKeyURL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-0.5 text-[10px] text-vscode-accent hover:text-vscode-accent-hover transition-colors no-underline"
+              >
+                获取 Key <ExternalLink size={9} />
+              </a>
+            )}
+          </div>
+        </div>
+        <div className="relative">
+          <input
+            type={showKey ? 'text' : 'password'}
+            value={apiKey}
+            onChange={e => handleKeyChange(e.target.value)}
+            placeholder={preset.keyHint || 'sk-...'}
+            className="w-full h-9 px-3 pr-9 bg-vscode-input border border-vscode-border rounded-lg
+              text-[13px] text-vscode-text font-mono
+              placeholder:text-vscode-text-dim/40
+              focus:outline-none focus:border-vscode-accent focus:ring-1 focus:ring-vscode-accent/20
+              transition-colors"
+          />
+          <button
+            onClick={() => setShowKey(!showKey)}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-vscode-hover transition-colors"
+            title={showKey ? '隐藏' : '显示'}
+          >
+            {showKey ? <EyeOff size={14} className="text-vscode-text-dim" /> : <Eye size={14} className="text-vscode-text-dim" />}
+          </button>
+        </div>
+      </div>
+
+      {/* ── 3. 测试连接 ── */}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={handleTest}
+          disabled={testing || !apiKey.trim()}
+          className="flex items-center gap-1.5 px-4 h-9 bg-vscode-accent hover:bg-vscode-accent-hover
+            text-white rounded-lg text-[12px] font-medium
+            disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
+        >
+          {testing ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+          测试连接
+        </button>
+
+        {testResult === 'ok' && (
+          <span className="flex items-center gap-1 text-vscode-green text-[12px] font-medium">
+            <Check size={13} /> 连接成功
+          </span>
+        )}
+        {testResult === 'fail' && (
+          <span className="text-vscode-red text-[11px] truncate max-w-[320px]" title={testMsg}>
+            {testMsg}
+          </span>
+        )}
+      </div>
+
+      {/* ── 4. 高级设置 (折叠) ── */}
+      <div className="border-t border-vscode-border/50 pt-1">
+        <button
+          onClick={() => setAdvancedOpen(!advancedOpen)}
+          className="flex items-center gap-1.5 w-full py-2 text-[11px] text-vscode-text-dim hover:text-vscode-text transition-colors"
+        >
+          {advancedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          高级设置
+          <span className="text-vscode-text-dim/40">
+            (模型 · Base URL · System Prompt)
+          </span>
+        </button>
+
+        {advancedOpen && (
+          <div className="space-y-3 pl-4 pt-1 pb-2">
+            <div>
+              <label className="block text-[11px] text-vscode-text-dim mb-1">模型</label>
+              <input
+                type="text"
+                value={model}
+                onChange={e => handleModelChange(e.target.value)}
+                placeholder={preset.defaultModel || '输入模型名...'}
+                className="w-full h-8 px-2.5 bg-vscode-input border border-vscode-border rounded-lg
+                  text-[12px] text-vscode-text font-mono
+                  focus:outline-none focus:border-vscode-accent transition-colors"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] text-vscode-text-dim mb-1">Base URL</label>
+              <input
+                type="text"
+                value={baseURL}
+                onChange={e => handleURLChange(e.target.value)}
+                placeholder={preset.defaultBaseURL || 'https://api.example.com/v1'}
+                className="w-full h-8 px-2.5 bg-vscode-input border border-vscode-border rounded-lg
+                  text-[12px] text-vscode-text font-mono
+                  focus:outline-none focus:border-vscode-accent transition-colors"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] text-vscode-text-dim mb-1">System Prompt</label>
+              <textarea
+                value={systemPrompt}
+                onChange={e => handlePromptChange(e.target.value)}
+                rows={3}
+                className="w-full px-2.5 py-1.5 bg-vscode-input border border-vscode-border rounded-lg
+                  text-[12px] text-vscode-text resize-none
+                  focus:outline-none focus:border-vscode-accent transition-colors"
+              />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -30,9 +30,9 @@ function loadDevices(): Device[] {
 }
 function saveDevices(d: Device[]) { localStorage.setItem('omni-devices2', JSON.stringify(d)) }
 function loadGroups(): Group[] {
-  try { const g: Group[] = JSON.parse(localStorage.getItem('omni-groups2') || '[]'); return g.find(x => x.id === 'default') ? g : [DEFAULT_GROUP, ...g] } catch { return [DEFAULT_GROUP] }
+  try { const g: Group[] = JSON.parse(localStorage.getItem('omni-groups2') || '[]'); console.log('[SessionSidebar] loadGroups key=omni-groups2 data=', g); return g.find(x => x.id === 'default') ? g : [DEFAULT_GROUP, ...g] } catch { return [DEFAULT_GROUP] }
 }
-function saveGroups(g: Group[]) { localStorage.setItem('omni-groups2', JSON.stringify(g)) }
+function saveGroups(g: Group[]) { console.log('[SessionSidebar] saveGroups key=omni-groups2 data=', g); localStorage.setItem('omni-groups2', JSON.stringify(g)) }
 
 export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSession, onNewSessionWithGroup, searchTerm }: Props) {
   const [devices, setDevices] = useState<Device[]>(loadDevices)
@@ -285,7 +285,7 @@ export default function SessionSidebar({ onDoubleClick, onEditSession, onNewSess
 
       {/* Context menu */}
       {ctx && (
-        <div className="fixed z-50 w-44 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctx.x, top: ctx.y }}>
+        <div className="fixed z-50 w-44 bg-vscode-input border border-vscode-border shadow-xl py-0.5 rounded" style={{ left: ctx.x, top: ctx.y }}>
           {ctx.type === 'device' && ctx.device && (
             <>
               <div className="px-3 py-1 text-[10px] text-vscode-text-dim truncate">{ctx.device.protocol.toUpperCase()} · {ctx.device.name}</div>

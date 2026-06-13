@@ -15,7 +15,7 @@ import React from 'react'
  *   - 活跃icon带左侧蓝色竖条指示器
  *   - 支持中英文切换（i18n）
  */
-import { Settings, SquarePlus, MessageSquare, Monitor, PanelRight, LayoutGrid, Rocket, Folder, FileText, Network } from 'lucide-react'
+import { Settings, SquarePlus, MessageSquare, Monitor, PanelRight, LayoutGrid, Rocket, Folder, FileText, Network, Zap } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import { useI18n } from '../lib/i18n'
 import { useShortcutStore } from '../stores/shortcutStore'
@@ -23,11 +23,13 @@ import { useShortcutStore } from '../stores/shortcutStore'
 interface Props {
   activeView: string
   sidebarVisible: boolean
+  automationVisible: boolean
   broadcastActive: boolean
   splitActive: boolean
   connectedCount: number
   onViewChange: (view: string) => void
   onToggleBroadcast: () => void
+  onToggleAutomation: () => void
   onOpenEditor: () => void
 }
 
@@ -50,7 +52,7 @@ const middleItems = [
   { id: 'split', icon: PanelRight, key: 'split' },
 ]
 
-export default function ActivityBar({ activeView, sidebarVisible, broadcastActive, splitActive, connectedCount, onViewChange, onToggleBroadcast, onOpenEditor }: Props) {
+export default function ActivityBar({ activeView, sidebarVisible, automationVisible, broadcastActive, splitActive, connectedCount, onViewChange, onToggleBroadcast, onToggleAutomation, onOpenEditor }: Props) {
   const accentColor = useConfigStore(s => s.accentColor)
   const showShortcuts = useConfigStore(s => s.showShortcuts)
   const { t } = useI18n()
@@ -110,6 +112,16 @@ export default function ActivityBar({ activeView, sidebarVisible, broadcastActiv
       </button>
 
       <div className="flex-1" />
+
+      {/* Automation */}
+      <button tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={onToggleAutomation}
+        title={t('automation')}
+        className="w-10 h-10 flex items-center justify-center rounded transition-colors relative"
+        style={{ color: automationVisible ? accentColor : undefined }}>
+        <Zap size={24} className={automationVisible ? '' : 'text-vscode-text-muted hover:text-white'} />
+        {automationVisible && <span className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r" style={{ background: accentColor }} />}
+      </button>
+
       {renderBtn('settings', Settings, t('settings'))}
     </div>
   )

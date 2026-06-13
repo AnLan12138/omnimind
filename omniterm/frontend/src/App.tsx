@@ -18,6 +18,7 @@ import { useEffect, useCallback, useState, useRef } from 'react'
  */
 import { Search, X, Power } from 'lucide-react'
 import ActivityBar from './components/ActivityBar'
+import TitleBar from './components/TitleBar'
 import SessionSidebar from './components/SessionSidebar'
 import TabBar from './components/TabBar'
 import Terminal, { disposeTerminal, getPoolXterm, feedBuffer } from './components/Terminal'
@@ -36,6 +37,7 @@ import MacroPanel from './components/MacroPanel'
 import FilePanel from './components/FilePanel'
 import TunnelPanel from './components/TunnelPanel'
 import MonitorPanel from './components/MonitorPanel'
+import RightSidebar from './components/RightSidebar'
 import logoImg from './assets/images/logo-universal.png'
 import { useI18n } from './lib/i18n'
 import { EventsOn } from '../wailsjs/runtime/runtime'
@@ -57,6 +59,8 @@ export default function App() {
   const splitActive = useSplitStore(s => s.active)
   const toggleSplit = useSplitStore(s => s.toggle)
   const [panelVisible, setPanelVisible] = useState(false)
+  const [automationVisible, setAutomationVisible] = useState(false)
+  const [autoPanelWidth, setAutoPanelWidth] = useState(260)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [sidebarSearch, setSidebarSearch] = useState('')
@@ -183,11 +187,38 @@ export default function App() {
     return <Terminal connId={tab.connId} onDisconnect={handleDisconnect} />
   }
 
+  // Right sidebar resize
+  const resizingRef = useRef(false)
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    resizingRef.current = true
+    const startX = e.clientX
+    const startW = autoPanelWidth
+    const onMove = (ev: MouseEvent) => {
+      if (!resizingRef.current) return
+      const delta = startX - ev.clientX
+      setAutoPanelWidth(Math.max(180, Math.min(600, startW + delta)))
+    }
+    const onUp = () => {
+      resizingRef.current = false
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'ew-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [autoPanelWidth])
+
   return (
     <div className="flex flex-col h-screen bg-vscode-bg">
+      <TitleBar />
       <div className="flex flex-1 min-h-0">
         <ActivityBar
           activeView={activeView} sidebarVisible={activeView === 'sessions'}
+          automationVisible={automationVisible}
           broadcastActive={broadcastActive} splitActive={splitActive}
           connectedCount={connectedCount}
           onToggleBroadcast={() => {
@@ -198,6 +229,7 @@ export default function App() {
             if (tabs.filter(t => t.state === 'connected').length < 2) { doToast(t('needMoreDevices')); return }
             store.start(tabs.filter(t => t.state === 'connected').map(t => t.connId))
           }}
+          onToggleAutomation={() => setAutomationVisible(v => !v)}
           onViewChange={v => {
             if (v === 'new') { setEditingSession(null); setDialogOpen(true) }
             else if (v === 'sessions') { setActiveView(activeView === 'sessions' ? 'terminal' : 'sessions') }
@@ -310,7 +342,7 @@ export default function App() {
                         height: inGrid ? `${100 / rows}%` : '100%',
                         display: 'flex', flexDirection: 'column',
                         border: inGrid ? (broadcastActive ? '2px solid rgba(86,156,214,0.5)' : '1px solid #3c3c3c') : undefined,
-                        borderRadius: inGrid ? 4 : 0,
+                        borderRadius: inGrid ? 8 : 0,
                         overflow: 'hidden',
                         boxSizing: 'border-box',
                       }}>
@@ -324,7 +356,7 @@ export default function App() {
                         {broadcastActive ? (<>
                           <span className="truncate flex-1" style={{ color: '#ccc' }}>{tab.protocol.toUpperCase()} · {tab.title}</span>
                           <button onMouseDown={e => e.preventDefault()} onClick={() => useBroadcastStore.getState().toggle(tab.connId)}
-                            style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, marginLeft: 4, fontWeight: 500, minWidth: 32,
+                            style={{ fontSize: 9, padding: '2px 6px', borderRadius: 8, marginLeft: 4, fontWeight: 500, minWidth: 32,
                               background: broadcastIncluded.has(tab.connId) ? 'rgba(34,197,94,0.13)' : 'rgba(107,114,128,0.13)',
                               color: broadcastIncluded.has(tab.connId) ? '#4ec9b0' : '#6a6a6a',
                               border: '1px solid ' + (broadcastIncluded.has(tab.connId) ? 'rgba(34,197,94,0.27)' : 'rgba(107,114,128,0.27)') }}>
@@ -344,13 +376,27 @@ export default function App() {
             )}
           </div>
         </div>
+
+        {/* Right sidebar */}
+        {automationVisible && (
+          <div className="shrink-0 flex flex-row" style={{ width: autoPanelWidth }}>
+            {/* Resize handle */}
+            <div
+              onMouseDown={handleResizeStart}
+              className="w-1 shrink-0 cursor-ew-resize hover:bg-vscode-accent/50 border-l border-vscode-border"
+            />
+            <div className="flex-1 min-w-0">
+              <RightSidebar />
+            </div>
+          </div>
+        )}
       </div>
       <StatusBar onTogglePanel={() => setPanelVisible(!panelVisible)} panelVisible={panelVisible}
         onMonitor={() => setActiveView(activeView === 'monitor' ? 'terminal' : 'monitor')} />
       {dialogOpen && <SessionDialog session={editingSession} groupId={defaultGroupId} onClose={() => setDialogOpen(false)} onSaved={loadSessions} onConnect={doConnect} />}
       {settingsOpen && <SettingsDialog onClose={() => { setSettingsOpen(false); setSettingsTab(undefined) }} initialTab={settingsTab} />}
       {toastMsg && (
-        <div className="fixed top-4 right-4 z-50 pointer-events-none" style={{ animation: 'toastIn 0.25s ease-out' }}>
+        <div className="fixed top-12 right-4 z-50 pointer-events-none" style={{ animation: 'toastIn 0.25s ease-out' }}>
           <div className={`w-80 px-4 py-2 rounded-lg text-[13px] text-white shadow-lg ${toastType === 'error' ? 'bg-red-600/90' : toastType === 'success' ? 'bg-green-600/90' : 'bg-vscode-accent/90'}`}>{toastMsg}</div>
         </div>
       )}

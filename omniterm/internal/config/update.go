@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	updateURL     = "https://api.github.com/repos/omnimind/omnimind/releases/latest"
+	updateURL     = "https://api.github.com/repos/AnLan12138/omnimind/releases/latest"
 	updateTimeout = 15 * time.Second
 )
 

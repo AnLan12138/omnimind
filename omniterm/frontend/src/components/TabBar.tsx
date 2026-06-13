@@ -11,8 +11,9 @@ import { useState } from 'react'
  */
 import { X, Copy } from 'lucide-react'
 import { useTabStore, type Tab } from '../stores/tabStore'
-import { getPoolXterm } from './Terminal'
+import { getPoolXterm, disposeTerminal } from './Terminal'
 import FormDialog from './FormDialog'
+import { Disconnect } from '../../wailsjs/go/main/App'
 
 const stateColors: Record<string, string> = {
   connected: '#4ec9b0', connecting: '#cca700', reconnecting: '#cca700', error: '#f44747', disconnected: '#6a6a6a',
@@ -69,7 +70,7 @@ export default function TabBar({ onCloneTab }: Props) {
       </div>
 
       {ctxTab && (
-        <div className="fixed z-50 w-36 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctxTab.x, top: ctxTab.y }}
+        <div className="fixed z-50 w-36 bg-vscode-input border border-vscode-border shadow-xl py-0.5 rounded" style={{ left: ctxTab.x, top: ctxTab.y }}
           onClick={() => setCtxTab(null)}>
           <button onClick={() => { onCloneTab?.(ctxTab.tab); setCtxTab(null) }}
             className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">
@@ -85,7 +86,12 @@ export default function TabBar({ onCloneTab }: Props) {
       {confirmClose && (
         <FormDialog title="关闭标签" danger confirmLabel="关闭"
           fields={[{ label: '', value: `确定关闭 "${confirmClose.title}" 吗？未保存的数据将丢失。`, set: () => {}, displayOnly: true }]}
-          onConfirm={() => { removeTab(confirmClose.id); setConfirmClose(null) }}
+          onConfirm={() => {
+            Disconnect(confirmClose.connId).catch(() => {})
+            disposeTerminal(confirmClose.connId)
+            removeTab(confirmClose.id)
+            setConfirmClose(null)
+          }}
           onCancel={() => setConfirmClose(null)} />
       )}
     </>

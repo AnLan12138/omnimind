@@ -1,4 +1,4 @@
-package main
+﻿package main
 /*
  * app.go — Go 后端主文件（Wails 绑定）
  * ==========================================
@@ -31,6 +31,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"omnimind/internal/ai"
 	"omnimind/internal/config"
 	"omnimind/internal/filetransfer"
 	"omnimind/internal/protocol"
@@ -43,6 +44,10 @@ import (
 	vncclient "omnimind/internal/protocol/vnc"
 	"omnimind/internal/session"
 	ghsync "omnimind/internal/sync"
+	"path/filepath"
+	"omnimind/internal/device"
+	"omnimind/internal/skill"
+	sshproto "golang.org/x/crypto/ssh"
 )
 
 // ringBuf is a simple circular byte buffer for replaying recent output.
@@ -86,6 +91,15 @@ type ActiveConn struct {
 	Cancel   context.CancelFunc
 	Latency  int64    // atomic, last measured RTT in milliseconds
 	ReplayBuf *ringBuf // recent output buffer for terminal re-attach
+	// Device info for AI context injection
+	DeviceHost string
+	DevicePort int
+	DeviceProto string
+	DeviceUser string
+
+    // Device detection
+    DeviceIdent *device.Identifier
+    SSHConn     *sshproto.Client // for extracting SSH banner
 }
 
 // LatencyProber is implemented by clients that can measure RTT
@@ -94,15 +108,23 @@ type LatencyProber interface {
 }
 
 type App struct {
-	ctx     context.Context
-	store   *session.Store
-	conns   map[string]*ActiveConn
-	connsMu sync.RWMutex
+	ctx           context.Context
+	store         *session.Store
+	skillManager  *skill.Manager
+	conns         map[string]*ActiveConn
+	connsMu       sync.RWMutex
+	// AI engine
+	aiToolRegistry *ai.ToolRegistry
+	aiSkillLoader  *ai.SkillLoader
+	aiRAG          *ai.RAGStore
+	aiMessages     map[string][]ai.Message // streamID -> conversation history
+	aiMsgMu        sync.Mutex
 }
 
 func NewApp() *App {
 	return &App{
-		conns: make(map[string]*ActiveConn),
+		conns:      make(map[string]*ActiveConn),
+		aiMessages: make(map[string][]ai.Message),
 	}
 }
 
@@ -121,6 +143,28 @@ func (a *App) startup(ctx context.Context) {
 	} else {
 		a.store = store
 	}
+
+    // Initialize skill manager
+    skillsDir := filepath.Join(dataDir, "skills")
+    a.skillManager = skill.NewManager(skillsDir)
+    if err := a.skillManager.LoadAll(); err != nil {
+        runtime.LogError(ctx, "Failed to load skills: "+err.Error())
+    }
+    // Ensure builtin skills exist
+    a.skillManager.EnsureBuiltin("device-fingerprint", "设备指纹识别", "自动识别连接设备的厂商、型号、OS版本和CLI模式")
+
+    // Initialize AI engine
+    aiSkillsDir := filepath.Join(dataDir, "ai-skills")
+    a.aiSkillLoader = ai.NewSkillLoader()
+    a.aiSkillLoader.LoadAll(aiSkillsDir)
+    a.aiSkillLoader.EnsureBuiltin(aiSkillsDir, "cisco-expert", "Cisco Expert", "Cisco IOS/IOS-XE/NX-OS")
+    a.aiSkillLoader.EnsureBuiltin(aiSkillsDir, "huawei-expert", "Huawei Expert", "Huawei VRP/VRPv8")
+    a.aiSkillLoader.EnsureBuiltin(aiSkillsDir, "troubleshooter", "Troubleshooter", "Systematic network troubleshooting")
+    ragPath := filepath.Join(dataDir, "ai-knowledge.json")
+    a.aiRAG = ai.NewRAGStore(ragPath)
+    a.seedRAGKnowledge()
+    a.loadConversations(dataDir)
+    a.initAITools()
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -131,6 +175,7 @@ func (a *App) shutdown(ctx context.Context) {
 	a.connsMu.Unlock()
 	if a.store != nil {
 		a.store.Close()
+    a.saveConversations()
 	}
 }
 
@@ -309,11 +354,15 @@ func (a *App) Connect(connID string, sess session.Session) error {
 
 	a.connsMu.Lock()
 	a.conns[connID] = &ActiveConn{
-		ID:        connID,
-		Client:    client,
-		ReplayBuf: rb,
-		Ctx:       ctx,
-		Cancel:    cancel,
+		ID:         connID,
+		Client:     client,
+		ReplayBuf:  rb,
+		Ctx:        ctx,
+		Cancel:     cancel,
+		DeviceHost: sess.Host,
+		DevicePort: sess.Port,
+		DeviceProto: string(sess.Protocol),
+		DeviceUser: sess.Username,
 	}
 	a.connsMu.Unlock()
 
@@ -322,12 +371,15 @@ func (a *App) Connect(connID string, sess session.Session) error {
 		return err
 	}
 
-	// Start latency polling for protocols that support it
-	if lp, ok := client.(LatencyProber); ok {
-		go a.pollLatency(ctx, connID, lp)
-	}
+	// Start device detection
+    go a.detectDevice(connID, client, sess)
 
-	return nil
+    // Start latency polling for protocols that support it
+    if lp, ok := client.(LatencyProber); ok {
+        go a.pollLatency(ctx, connID, lp)
+    }
+
+    return nil
 }
 
 func (a *App) pollLatency(ctx context.Context, connID string, lp LatencyProber) {
@@ -357,6 +409,98 @@ func (a *App) GetLatency(connID string) int64 {
 		return 0
 	}
 	return atomic.LoadInt64(&ac.Latency)
+}
+
+// detectDevice runs passive device detection and stores the result.
+func (a *App) detectDevice(connID string, client protocol.ProtocolClient, sess session.Session) {
+    // Get SSH banner immediately if available
+    sshBanner := ""
+    if sc, ok := client.(*sshclient.Client); ok {
+        sshBanner = sc.Banner()
+    }
+
+    // For non-SSH (Telnet/Serial), poll the replay buffer for a prompt
+    // Telnet login + prompt can take several seconds
+    var prompt string
+    if sshBanner == "" {
+        maxWait := 4 * time.Second
+        pollInterval := 500 * time.Millisecond
+        deadline := time.Now().Add(maxWait)
+        for time.Now().Before(deadline) {
+            time.Sleep(pollInterval)
+            a.connsMu.RLock()
+            ac, ok := a.conns[connID]
+            a.connsMu.RUnlock()
+            if !ok || ac == nil {
+                return
+            }
+            if ac.ReplayBuf != nil {
+                buf := ac.ReplayBuf.Bytes()
+                lines := strings.Split(string(buf), "\n")
+                for i := len(lines) - 1; i >= 0; i-- {
+                    trimmed := strings.TrimSpace(lines[i])
+                    if trimmed != "" {
+                        prompt = trimmed
+                        break
+                    }
+                }
+            }
+            if prompt != "" {
+                break
+            }
+        }
+    } else {
+        time.Sleep(200 * time.Millisecond) // SSH: brief wait for initial data
+        a.connsMu.RLock()
+        ac, ok := a.conns[connID]
+        a.connsMu.RUnlock()
+        if !ok || ac == nil {
+            return
+        }
+        if ac.ReplayBuf != nil {
+            buf := ac.ReplayBuf.Bytes()
+            lines := strings.Split(string(buf), "\n")
+            for i := len(lines) - 1; i >= 0; i-- {
+                trimmed := strings.TrimSpace(lines[i])
+                if trimmed != "" {
+                    prompt = trimmed
+                    break
+                }
+            }
+        }
+    }
+
+    a.connsMu.RLock()
+    ac, ok := a.conns[connID]
+    a.connsMu.RUnlock()
+    if !ok || ac == nil {
+        return
+    }
+
+    ident := device.NewIdentifier(nil, false)
+    ident.Detector = device.VendorDetector{
+        Host:      sess.Host,
+        Port:      sess.Port,
+        User:      sess.Username,
+        SSHBanner: sshBanner,
+        Prompt:    prompt,
+    }
+    info := ident.IdentifyPassive()
+
+    a.connsMu.Lock()
+    if ac2, ok := a.conns[connID]; ok {
+        ac2.DeviceIdent = ident
+    }
+    a.connsMu.Unlock()
+
+    runtime.EventsEmit(a.ctx, "conn:"+connID+":device", info)
+    // Trigger skill auto-discovery if vendor was identified
+    if info.Vendor != "" && a.aiSkillLoader != nil {
+        results := a.aiSkillLoader.RunDiscovery(connID, string(info.Vendor))
+        for _, r := range results {
+            runtime.LogInfo(a.ctx, "Skill discovery: "+r)
+        }
+    }
 }
 
 func (a *App) autoReconnect(connID string, sess session.Session, client protocol.ProtocolClient) {
@@ -968,4 +1112,520 @@ func (a *App) SyncPull(token string, gistID string) (map[string]string, error) {
 		"settings": data.Settings,
 		"devices":  data.Devices,
 	}, nil
+}
+
+// --- AI Engine ---
+
+// initAITools registers all built-in tools with the tool registry
+func (a *App) initAITools() {
+	tctx := &ai.ToolContext{
+		GetConnections: func() []ai.DeviceInfo {
+			a.connsMu.RLock()
+			defer a.connsMu.RUnlock()
+			var devices []ai.DeviceInfo
+			for id, ac := range a.conns {
+				if ac.Client.State().String() != "connected" {
+					continue
+				}
+				d := ai.DeviceInfo{
+					ConnID:   id,
+					Host:     ac.DeviceHost,
+					Port:     ac.DevicePort,
+					Protocol: ac.DeviceProto,
+					Username: ac.DeviceUser,
+				}
+				if ac.DeviceIdent != nil {
+					d.Vendor = string(ac.DeviceIdent.DeviceInfo.Vendor)
+					d.Model = ac.DeviceIdent.DeviceInfo.Model
+					d.OS = string(ac.DeviceIdent.DeviceInfo.OS)
+					d.OSVer = ac.DeviceIdent.DeviceInfo.OSVersion
+					d.Hostname = ac.DeviceIdent.DeviceInfo.Hostname
+				}
+				devices = append(devices, d)
+			}
+			return devices
+		},
+		SendCommand: func(connID, cmd string) (string, error) {
+			if err := a.sendData(connID, cmd); err != nil {
+				return "", err
+			}
+			time.Sleep(1 * time.Second) // wait for response
+			return a.GetConnectionBuffer(connID), nil
+		},
+		SendCommandDirect: func(connID, cmd string) error {
+			return a.sendData(connID, cmd)
+		},
+		ReadBuffer: func(connID string) string {
+			return a.GetConnectionBuffer(connID)
+		},
+		SearchKnowledge: func(query string, topK int) []ai.RAGDocument {
+			return a.aiRAG.Search(query, topK)
+		},
+		IndexDocument: func(doc ai.RAGDocument) error {
+			a.aiRAG.Index(doc)
+			return nil
+		},
+		ListSkills: func() []string {
+			return a.aiSkillLoader.List()
+		},
+		GetSkill: func(name string) (string, error) {
+			sd, err := a.aiSkillLoader.Get(name)
+			if err != nil {
+				return "", err
+			}
+			return sd.Prompt, nil
+		},
+	}
+	a.aiToolRegistry = ai.NewToolRegistry(tctx)
+	// Register built-in tools from internal/ai/tools package
+	// (tools are registered via tool package imports)
+	initBuiltinTools(a.aiToolRegistry, tctx)
+}
+
+// AIChatStream — main entry point for AI chat with agent loop
+func (a *App) AIChatStream(streamID string, messages []ai.Message, cfg ai.ClientConfig) error {
+	if a.aiToolRegistry == nil {
+		a.initAITools()
+	}
+
+	// Extract user message and config from frontend params
+	userInput := ""
+	systemPrompt := "你是一个网络运维AI助手。你可以使用工具来查询设备信息、发送命令、读取终端输出。请用中文回复。"
+	var history []ai.Message
+
+	for _, m := range messages {
+		switch m.Role {
+		case "system":
+			systemPrompt = m.Content
+		case "user":
+			userInput = m.Content
+			history = append(history, m)
+		}
+	}
+
+	// Get conversation history
+	a.aiMsgMu.Lock()
+	savedHistory := a.aiMessages[streamID]
+	a.aiMsgMu.Unlock()
+	if len(savedHistory) > 0 {
+		history = savedHistory
+	}
+	history = append(history, ai.Message{Role: "user", Content: userInput})
+
+	// Build context
+	ctxBuilder := ai.NewContextBuilder().
+		SetSystemPrompt(systemPrompt).
+		SetDevices(a.getDeviceInfos()).
+		SetHistory(history).
+		SetCoT(ai.CoTConfig{Enabled: true, Steps: 5}).
+		SetMaxTokens(64000)
+
+	agentCtx := ctxBuilder.Build()
+
+	// Create agent
+	client := ai.NewStreamClient(cfg)
+	agent := ai.NewAgent(a.aiToolRegistry, client, agentCtx, ai.AgentConfig{
+		MaxSteps: 5,
+		CoT:      ai.CoTConfig{Enabled: true},
+		EmitEvent: func(ev ai.StreamEvent) {
+			// Map StreamEvent to Wails events for frontend
+			switch ev.Type {
+			case "chunk":
+				runtime.EventsEmit(a.ctx, "ai:stream:"+streamID+":chunk", ev.Content)
+			case "thought":
+				runtime.EventsEmit(a.ctx, "ai:stream:"+streamID+":thought", ev.Content)
+			case "tool_call":
+				data, _ := json.Marshal(map[string]string{"tool": ev.Tool, "args": ev.Args})
+				runtime.EventsEmit(a.ctx, "ai:stream:"+streamID+":tool", string(data))
+			case "tool_result":
+				data, _ := json.Marshal(map[string]string{"tool": ev.Tool, "result": ev.Result})
+				runtime.EventsEmit(a.ctx, "ai:stream:"+streamID+":tool_result", string(data))
+			case "done":
+				runtime.EventsEmit(a.ctx, "ai:stream:"+streamID+":done", ev.Content)
+			case "error":
+				runtime.EventsEmit(a.ctx, "ai:stream:"+streamID+":error", ev.Content)
+			}
+		},
+	})
+
+	// Run agent in background context
+	go func() {
+		if err := agent.Run(context.Background(), userInput, streamID); err != nil {
+			runtime.EventsEmit(a.ctx, "ai:stream:"+streamID+":error", err.Error())
+		}
+		// Save history
+		a.aiMsgMu.Lock()
+		a.aiMessages[streamID] = agent.GetHistory()
+        a.saveConversations()
+		a.aiMsgMu.Unlock()
+	}()
+
+	return nil
+}
+
+// getDeviceInfos returns connected device info for AI context
+func (a *App) getDeviceInfos() []ai.DeviceInfo {
+	a.connsMu.RLock()
+	defer a.connsMu.RUnlock()
+	var devices []ai.DeviceInfo
+	for id, ac := range a.conns {
+		if ac.Client.State().String() != "connected" {
+			continue
+		}
+		d := ai.DeviceInfo{
+			ConnID:   id,
+			Host:     ac.DeviceHost,
+			Port:     ac.DevicePort,
+			Protocol: ac.DeviceProto,
+			Username: ac.DeviceUser,
+		}
+		if ac.DeviceIdent != nil {
+			d.Vendor = string(ac.DeviceIdent.DeviceInfo.Vendor)
+			d.Model = ac.DeviceIdent.DeviceInfo.Model
+			d.OS = string(ac.DeviceIdent.DeviceInfo.OS)
+			d.OSVer = ac.DeviceIdent.DeviceInfo.OSVersion
+			d.Hostname = ac.DeviceIdent.DeviceInfo.Hostname
+		}
+		devices = append(devices, d)
+	}
+	return devices
+}
+
+// initBuiltinTools registers all built-in tools
+func initBuiltinTools(r *ai.ToolRegistry, ctx *ai.ToolContext) {
+	// Device tools
+	r.Register(&ai.Tool{
+		Name:        "list_devices",
+		Description: "列出当前所有已连接的设备，返回设备列表（连接ID、IP、端口、协议、厂商、型号等信息）",
+		Parameters:  ai.Params(map[string]interface{}{}, []string{}),
+		Handler: func(args map[string]interface{}) (string, error) {
+			devices := ctx.GetConnections()
+			if len(devices) == 0 {
+				return "当前没有已连接的设备", nil
+			}
+			var lines []string
+			lines = append(lines, fmt.Sprintf("共 %d 台设备已连接:\n", len(devices)))
+			for i, d := range devices {
+				info := fmt.Sprintf("%s:%d (%s)", d.Host, d.Port, strings.ToUpper(d.Protocol))
+				if d.Vendor != "" {
+					info += fmt.Sprintf(" [%s", d.Vendor)
+					if d.Model != "" {
+						info += " " + d.Model
+					}
+					info += "]"
+				}
+				lines = append(lines, fmt.Sprintf("  %d. connId=%s — %s", i+1, d.ConnID, info))
+			}
+			return strings.Join(lines, "\n"), nil
+		},
+	})
+
+	// ── Read-only command ──
+	r.Register(&ai.Tool{
+		Name:        "send_command",
+		Description: "发送只读查询命令到设备（show/display/ping/traceroute等）。只允许查询类命令。需要修改配置时请用send_config工具",
+		Parameters: ai.Params(map[string]interface{}{
+			"connId":  ai.StringParam("设备连接ID，从list_devices返回"),
+			"command": ai.StringParam("只读查询命令，如 show version, display interface brief"),
+		}, []string{"connId", "command"}),
+		Handler: func(args map[string]interface{}) (string, error) {
+			connID, _ := args["connId"].(string)
+			cmd, _ := args["command"].(string)
+			if !isReadOnly(cmd) {
+				return "", fmt.Errorf("命令被阻止: 这是写命令。请用send_config工具，用户确认后才能执行")
+			}
+			result, err := ctx.SendCommand(connID, cmd+"\n")
+			if err != nil { return "", err }
+			return result, nil
+		},
+	})
+
+	// ── Config command (needs user confirmation) ──
+	r.Register(&ai.Tool{
+		Name:        "send_config",
+		Description: "生成配置命令，需要用户确认后才执行。当你需要修改设备配置时使用（VLAN、路由、接口、ACL等）。系统会弹出确认请求",
+		Parameters: ai.Params(map[string]interface{}{
+			"connId":      ai.StringParam("设备连接ID"),
+			"commands":    ai.StringParam("配置命令，多行用\n分隔，如: interface Gi0/1\nswitchport access vlan 100"),
+			"description": ai.StringParam("这些命令的作用说明，如: 将Gi0/1加入VLAN100"),
+		}, []string{"connId", "commands", "description"}),
+		Handler: func(args map[string]interface{}) (string, error) {
+			connID, _ := args["connId"].(string)
+			cmds, _ := args["commands"].(string)
+			desc, _ := args["description"].(string)
+			blocked := []string{"erase startup", "format ", "delete /recursive", "write erase", "reload", "reboot"}
+			for _, b := range blocked {
+				if strings.Contains(strings.ToLower(cmds), b) {
+					return "", fmt.Errorf("高危命令永久阻止: %s", b)
+				}
+			}
+			return fmt.Sprintf("⚠️ 需要确认!\n设备: %s\n说明: %s\n命令:\n%s\n\n请回复\"确认\"批准，回复\"取消\"拒绝", connID, desc, cmds), nil
+		},
+	})
+
+	// ── Execute approved config ──
+	r.Register(&ai.Tool{
+		Name:        "execute_config",
+			Description: "执行用户已批准的配置命令。仅在用户明确回复后使用",
+		Parameters: ai.Params(map[string]interface{}{
+			"connId":   ai.StringParam("设备连接ID"),
+			"commands": ai.StringParam("已批准的配置命令"),
+		}, []string{"connId", "commands"}),
+		Handler: func(args map[string]interface{}) (string, error) {
+			connID, _ := args["connId"].(string)
+			cmds, _ := args["commands"].(string)
+			var results []string
+			for _, cmd := range strings.Split(cmds, "\n") {
+				cmd = strings.TrimSpace(cmd)
+				if cmd == "" { continue }
+				if err := ctx.SendCommandDirect(connID, cmd+"\n"); err != nil {
+					results = append(results, fmt.Sprintf("✗ %s → %v", cmd, err))
+				} else {
+					results = append(results, fmt.Sprintf("✓ %s → 已发送", cmd))
+				}
+			}
+			time.Sleep(2 * time.Second)
+			output := ctx.ReadBuffer(connID)
+			return fmt.Sprintf("执行结果:\n%s\n\n终端输出:\n%s", strings.Join(results, "\n"), output), nil
+		},
+	})
+
+	// ── Read buffer ──
+	r.Register(&ai.Tool{
+		Name:        "read_buffer",
+		Description: "读取设备终端的当前输出",
+		Parameters: ai.Params(map[string]interface{}{
+			"connId": ai.StringParam("设备连接ID"),
+		}, []string{"connId"}),
+		Handler: func(args map[string]interface{}) (string, error) {
+			connID, _ := args["connId"].(string)
+			buf := ctx.ReadBuffer(connID)
+			if buf == "" { return "缓冲区为空", nil }
+			if len(buf) > 8000 { buf = "...\n" + buf[len(buf)-8000:] }
+			return buf, nil
+		},
+	})
+
+	// Knowledge tool
+	r.Register(&ai.Tool{
+		Name:        "search_knowledge",
+		Description: "从知识库中搜索网络设备相关文档（配置指南、排障手册、命令参考等）",
+		Parameters: ai.Params(map[string]interface{}{
+			"query": ai.StringParam("搜索关键词"),
+		}, []string{"query"}),
+		Handler: func(args map[string]interface{}) (string, error) {
+			query, _ := args["query"].(string)
+			docs := ctx.SearchKnowledge(query, 3)
+			if len(docs) == 0 {
+				return "未找到相关文档。请使用网络知识回答", nil
+			}
+			var parts []string
+			for i, doc := range docs {
+				parts = append(parts, fmt.Sprintf("--- 文档%d: %s ---\n%s", i+1, doc.Title, doc.Content))
+			}
+			return strings.Join(parts, "\n\n"), nil
+		},
+	})
+
+	// Skill tool
+	r.Register(&ai.Tool{
+		Name:        "list_skills",
+		Description: "列出所有可用的技能角色（如思科专家、华为专家、排障专家等）",
+		Parameters:  ai.Params(map[string]interface{}{}, []string{}),
+		Handler: func(args map[string]interface{}) (string, error) {
+			skills := ctx.ListSkills()
+			if len(skills) == 0 {
+				return "当前没有可用的技能", nil
+			}
+			return "可用技能: " + strings.Join(skills, ", "), nil
+		},
+	})
+}
+
+// --- Skill Management ---
+
+func (a *App) ListSkills() ([]*skill.Skill, error) {
+    if a.skillManager == nil {
+        return nil, fmt.Errorf("skill manager not initialized")
+    }
+    return a.skillManager.List(), nil
+}
+
+func (a *App) GetDeviceInfo(connID string) (device.DeviceInfo, error) {
+    a.connsMu.RLock()
+    ac := a.conns[connID]
+    a.connsMu.RUnlock()
+    if ac == nil || ac.DeviceIdent == nil {
+        return device.DeviceInfo{}, fmt.Errorf("no device info for %s", connID)
+    }
+    return ac.DeviceIdent.DeviceInfo, nil
+}
+
+func (a *App) DeviceDetected(connID string, info device.DeviceInfo) {
+    runtime.EventsEmit(a.ctx, "conn:"+connID+":device", info)
+}
+
+// seedRAGKnowledge populates the knowledge base with network device command references
+func (a *App) seedRAGKnowledge() {
+    existing := a.aiRAG.Search("show version display device", 1)
+    if len(existing) > 0 {
+        return // already seeded
+    }
+    seeds := []ai.RAGDocument{
+        {ID: "cisco-common", Title: "Cisco IOS 常用命令", Tags: []string{"cisco", "ios", "命令"}, Content: "show version — 查看版本和型号\nshow running-config — 查看运行配置\nshow interfaces status — 接口状态总览\nshow ip interface brief — IP接口摘要\nshow vlan brief — VLAN摘要\nshow mac address-table — MAC地址表\nshow cdp neighbors — CDP邻居\nshow logging — 系统日志\nshow processes cpu — CPU使用率\nshow memory — 内存使用\nping — 连通性测试\ntraceroute — 路由追踪"},
+        {ID: "huawei-common", Title: "Huawei VRP 常用命令", Tags: []string{"huawei", "vrp", "命令"}, Content: "display version — 查看版本\ndisplay current-configuration — 运行配置\ndisplay interface brief — 接口摘要\ndisplay ip interface brief — IP接口\ndisplay vlan — VLAN信息\ndisplay mac-address — MAC地址表\ndisplay lldp neighbor — LLDP邻居\ndisplay logbuffer — 日志\ndisplay cpu-usage — CPU使用率\ndisplay memory-usage — 内存使用"},
+        {ID: "troubleshoot-l2", Title: "二层网络排障指南", Tags: []string{"排障", "二层", "VLAN", "STP"}, Content: "1. 检查接口状态 show interfaces status\n2. 检查VLAN配置 show vlan\n3. 检查STP状态 show spanning-tree\n4. 检查MAC表 show mac address-table\n5. 检查CDP/LLDP邻居 show cdp neighbors\n常见问题: VLAN不匹配导致不通、STP阻塞端口、双工不匹配、Native VLAN错误"},
+        {ID: "troubleshoot-l3", Title: "三层网络排障指南", Tags: []string{"排障", "三层", "路由", "OSPF", "BGP"}, Content: "1. 检查路由表 show ip route\n2. 检查OSPF邻居 show ip ospf neighbor\n3. 检查BGP邻居 show ip bgp summary\n4. 检查接口IP show ip interface brief\n5. Ping测试连通性\n常见问题: 路由缺失、邻居不建立、ACL阻断、MTU不匹配"},
+        {ID: "security-acl", Title: "ACL和安全配置", Tags: []string{"安全", "ACL", "防火墙"}, Content: "Cisco: show access-lists\nHuawei: display acl all\n配置ACL: ip access-list extended NAME / acl number 3000\n应用到接口: ip access-group NAME in/out\n常见问题: ACL顺序错误、方向搞反、隐式deny"},
+    }
+    for _, doc := range seeds {
+        a.aiRAG.Index(doc)
+    }
+}
+
+// ImportKnowledge allows frontend to add knowledge documents
+func (a *App) ImportKnowledge(title, content, tags string) error {
+    id := uuid.New().String()
+    tagList := []string{}
+    for _, t := range strings.Split(tags, ",") {
+        t = strings.TrimSpace(t)
+        if t != "" {
+            tagList = append(tagList, t)
+        }
+    }
+    a.aiRAG.Index(ai.RAGDocument{ID: id, Title: title, Content: content, Tags: tagList})
+    return nil
+}
+
+// SearchKnowledge searches the knowledge base
+func (a *App) SearchKnowledge(query string) []ai.RAGDocument {
+    return a.aiRAG.Search(query, 5)
+}
+
+// ── Conversation Persistence ──
+
+func (a *App) loadConversations(dataDir string) {
+    convPath := filepath.Join(dataDir, "ai-conversations.json")
+    data, err := os.ReadFile(convPath)
+    if err != nil {
+        return
+    }
+    json.Unmarshal(data, &a.aiMessages)
+}
+
+func (a *App) saveConversations() {
+    if a.store == nil {
+        return
+    }
+    dataDir, _ := config.DataDir()
+    if dataDir == "" {
+        return
+    }
+    a.aiMsgMu.Lock()
+    data, _ := json.Marshal(a.aiMessages)
+    a.aiMsgMu.Unlock()
+    os.WriteFile(filepath.Join(dataDir, "ai-conversations.json"), data, 0644)
+}
+
+// ── Multimodal Support ──
+
+// AIChatWithImage supports image+text multimodal input (GPT-4V, Claude)
+func (a *App) AIChatWithImage(streamID string, text string, imageBase64 string, imageType string, cfg ai.ClientConfig) error {
+    if a.aiToolRegistry == nil {
+        a.initAITools()
+    }
+    // Build multimodal user message
+    userMsg := map[string]interface{}{
+        "role": "user",
+        "content": []map[string]interface{}{
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": map[string]string{"url": "data:image/" + imageType + ";base64," + imageBase64}},
+        },
+    }
+    // Fallback: if model doesn't support images, send text only
+    _ = userMsg
+    // For now DeepSeek V4 doesn't support images — return not-supported
+    runtime.EventsEmit(a.ctx, "ai:stream:"+streamID+":error", "多模态需要GPT-4V/Claude模型支持，DeepSeek V4暂不支持图片输入")
+    return nil
+}
+
+// isReadOnly checks if a command is safe to execute without confirmation
+func isReadOnly(cmd string) bool {
+	lower := strings.ToLower(cmd)
+	// Whitelist: commands that start with these prefixes
+	readPrefixes := []string{
+		"show ", "display ", "ping ", "traceroute ", "tracert ",
+		"dir ", "ls ", "pwd", "cat ", "more ", "head ", "tail ",
+		"get ", "getv ", "snmpget", "snmpwalk",
+		"terminal length", "terminal width",
+	}
+	for _, p := range readPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	// Multi-command: all parts must be readonly
+	parts := strings.Split(cmd, "\n")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" { continue }
+		pLower := strings.ToLower(part)
+		ok := false
+		for _, p := range readPrefixes {
+			if strings.HasPrefix(pLower, p) {
+				ok = true
+				break
+			}
+		}
+		if !ok { return false }
+	}
+	return false
+}
+
+// ── RAG Knowledge Management ──
+
+// ListKnowledge returns all indexed documents
+func (a *App) ListKnowledge() []ai.RAGDocument {
+    return a.aiRAG.Search("", 50)
+}
+
+// DeleteKnowledge removes a document from the knowledge base
+func (a *App) DeleteKnowledge(id string) error {
+    return a.aiRAG.Delete(id)
+}
+
+// ── Skill CRUD ──
+
+// GetSkillDetail returns a skill's full definition as JSON string
+func (a *App) GetSkillDetail(skillID string) (string, error) {
+    sd, err := a.aiSkillLoader.Get(skillID)
+    if err != nil {
+        return "", err
+    }
+    data, _ := json.Marshal(sd)
+    return string(data), nil
+}
+
+// SaveSkill saves a skill definition (create or update) and writes the YAML file
+func (a *App) SaveSkill(skillID, name, description, prompt, yamlContent string) error {
+    dataDir, _ := config.DataDir()
+    skillsDir := filepath.Join(dataDir, "ai-skills")
+    os.MkdirAll(skillsDir, 0755)
+    path := filepath.Join(skillsDir, skillID+".yaml")
+    if yamlContent == "" {
+        yamlContent = "id: " + skillID + "\nname: " + name + "\ndescription: " + description + "\nprompt: |\n  " + strings.ReplaceAll(prompt, "\n", "\n  ") + "\n"
+    }
+    if err := os.WriteFile(path, []byte(yamlContent), 0644); err != nil {
+        return err
+    }
+    // Reload
+    a.aiSkillLoader.LoadAll(skillsDir)
+    return nil
+}
+
+// DeleteSkill removes a skill YAML file
+func (a *App) DeleteSkill(skillID string) error {
+    dataDir, _ := config.DataDir()
+    path := filepath.Join(dataDir, "ai-skills", skillID+".yaml")
+    return os.Remove(path)
 }

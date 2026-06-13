@@ -6,6 +6,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 //go:embed all:frontend/dist
@@ -20,6 +21,10 @@ func main() {
 		Height:    860,
 		MinWidth:  800,
 		MinHeight: 500,
+		Frameless: true,
+		Windows: &windows.Options{
+			DisableWindowIcon: true,
+		},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

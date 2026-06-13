@@ -1,3 +1,131 @@
+export namespace ai {
+	
+	export class ClientConfig {
+	    provider: string;
+	    apiKey: string;
+	    model: string;
+	    baseURL: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClientConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.apiKey = source["apiKey"];
+	        this.model = source["model"];
+	        this.baseURL = source["baseURL"];
+	    }
+	}
+	export class ToolCallFunc {
+	    name: string;
+	    arguments: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolCallFunc(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.arguments = source["arguments"];
+	    }
+	}
+	export class ToolCall {
+	    id: string;
+	    type: string;
+	    function: ToolCallFunc;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolCall(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.type = source["type"];
+	        this.function = this.convertValues(source["function"], ToolCallFunc);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Message {
+	    role: string;
+	    content?: string;
+	    reasoning_content?: string;
+	    tool_calls?: ToolCall[];
+	    tool_call_id?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Message(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.role = source["role"];
+	        this.content = source["content"];
+	        this.reasoning_content = source["reasoning_content"];
+	        this.tool_calls = this.convertValues(source["tool_calls"], ToolCall);
+	        this.tool_call_id = source["tool_call_id"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class RAGDocument {
+	    id: string;
+	    title: string;
+	    content: string;
+	    tags: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RAGDocument(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.content = source["content"];
+	        this.tags = source["tags"];
+	    }
+	}
+	
+
+}
+
 export namespace config {
 	
 	export class ReleaseAsset {
@@ -51,6 +179,41 @@ export namespace config {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace device {
+	
+	export class DeviceInfo {
+	    vendor: string;
+	    category: string;
+	    os: string;
+	    osVersion: string;
+	    model: string;
+	    serial: string;
+	    hostname: string;
+	    arch: string;
+	    confidence: number;
+	    method: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vendor = source["vendor"];
+	        this.category = source["category"];
+	        this.os = source["os"];
+	        this.osVersion = source["osVersion"];
+	        this.model = source["model"];
+	        this.serial = source["serial"];
+	        this.hostname = source["hostname"];
+	        this.arch = source["arch"];
+	        this.confidence = source["confidence"];
+	        this.method = source["method"];
+	    }
 	}
 
 }
@@ -190,6 +353,123 @@ export namespace session {
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }
+	}
+
+}
+
+export namespace skill {
+	
+	export class ModeRule {
+	    Mode: string;
+	    Match: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModeRule(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Mode = source["Mode"];
+	        this.Match = source["Match"];
+	    }
+	}
+	export class PromptRule {
+	    Patterns: string[];
+	    Exclude: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PromptRule(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Patterns = source["Patterns"];
+	        this.Exclude = source["Exclude"];
+	    }
+	}
+	export class VendorRule {
+	    Vendor: string;
+	    Banner: string[];
+	    Prompt: PromptRule;
+	
+	    static createFrom(source: any = {}) {
+	        return new VendorRule(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Vendor = source["Vendor"];
+	        this.Banner = source["Banner"];
+	        this.Prompt = this.convertValues(source["Prompt"], PromptRule);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Skill {
+	    ID: string;
+	    Name: string;
+	    Version: string;
+	    Author: string;
+	    Description: string;
+	    Requires: string;
+	    Commands: Record<string, string>;
+	    Enabled: boolean;
+	    Builtin: boolean;
+	    VendorRules: VendorRule[];
+	    ModeRules: Record<string, Array<ModeRule>>;
+	
+	    static createFrom(source: any = {}) {
+	        return new Skill(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ID = source["ID"];
+	        this.Name = source["Name"];
+	        this.Version = source["Version"];
+	        this.Author = source["Author"];
+	        this.Description = source["Description"];
+	        this.Requires = source["Requires"];
+	        this.Commands = source["Commands"];
+	        this.Enabled = source["Enabled"];
+	        this.Builtin = source["Builtin"];
+	        this.VendorRules = this.convertValues(source["VendorRules"], VendorRule);
+	        this.ModeRules = this.convertValues(source["ModeRules"], Array<ModeRule>, true);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

@@ -11,16 +11,16 @@ RequestExecutionLevel admin
 
 Section "Install"
   SetOutPath "$INSTDIR"
-  File "..\build\bin\omnimind.exe"
-  CreateShortCut "$DESKTOP\OmniMind.lnk" "$INSTDIR\omnimind.exe"
+  File "..\build\bin\OmniMind.exe"
+  CreateShortCut "$DESKTOP\OmniMind.lnk" "$INSTDIR\OmniMind.exe"
   CreateDirectory "$SMPROGRAMS\OmniMind"
-  CreateShortCut "$SMPROGRAMS\OmniMind\OmniMind.lnk" "$INSTDIR\omnimind.exe"
+  CreateShortCut "$SMPROGRAMS\OmniMind\OmniMind.lnk" "$INSTDIR\OmniMind.exe"
   CreateShortCut "$SMPROGRAMS\OmniMind\Uninstall.lnk" "$INSTDIR\uninstall.exe"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd
 
 Section "Uninstall"
-  Delete "$INSTDIR\omnimind.exe"
+  Delete "$INSTDIR\OmniMind.exe"
   Delete "$INSTDIR\uninstall.exe"
   Delete "$DESKTOP\OmniMind.lnk"
   RMDir /r "$SMPROGRAMS\OmniMind"

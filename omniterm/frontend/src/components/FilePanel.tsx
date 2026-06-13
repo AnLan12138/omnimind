@@ -286,7 +286,7 @@ export default function FilePanel({ connId, searchTerm = '', onClose }: Props) {
       </div>
 
       {/* Context menu */}
-      {ctx && <div className="fixed z-50 w-40 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctx.x, top: ctx.y }}>
+      {ctx && <div className="fixed z-50 w-40 bg-vscode-input border border-vscode-border shadow-xl py-0.5 rounded" style={{ left: ctx.x, top: ctx.y }}>
         <div className="px-3 py-1 text-[10px] text-vscode-text-dim truncate">{ctx.target.name}</div>
         {ctx.target.isDir && <button onClick={() => { load(ctx.target.path); setCtx(null) }} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">Open</button>}
         <button onClick={() => { enterDir(ctx.target); setCtx(null) }} className="w-full flex items-center gap-2 px-3 py-1 hover:bg-vscode-hover text-[12px] text-vscode-text">{ctx.target.isDir ? 'Enter' : 'Open'}</button>

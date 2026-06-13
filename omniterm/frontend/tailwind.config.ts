@@ -45,6 +45,9 @@ export default {
         sans: ["Segoe UI", "system-ui", "sans-serif"],
         mono: ["Cascadia Code", "Consolas", "JetBrains Mono", "monospace"],
       },
+      borderRadius: {
+        DEFAULT: '8px',
+      },
     },
   },
   plugins: [],

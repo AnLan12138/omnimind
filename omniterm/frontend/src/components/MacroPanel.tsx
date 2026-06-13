@@ -12,9 +12,9 @@ interface CtxMenu { x: number; y: number; type: 'cmd' | 'group' | 'root'; cmd?: 
 function loadCmds(): Command[] { try { const d = localStorage.getItem('omni-cmds2'); return d ? JSON.parse(d) : [] } catch { return [] } }
 function saveCmds(c: Command[]) { localStorage.setItem('omni-cmds2', JSON.stringify(c)) }
 function loadGroups(): Group[] {
-  try { const g: Group[] = JSON.parse(localStorage.getItem('omni-groups2') || '[]'); return g.find(x => x.id === 'default') ? g : [DEFAULT_GROUP, ...g] } catch { return [DEFAULT_GROUP] }
+  try { const g: Group[] = JSON.parse(localStorage.getItem('omni-macro-groups') || '[]'); console.log('[MacroPanel] loadGroups key=omni-macro-groups data=', g); return g.find(x => x.id === 'default') ? g : [DEFAULT_GROUP, ...g] } catch { return [DEFAULT_GROUP] }
 }
-function saveGroups(g: Group[]) { localStorage.setItem('omni-groups2', JSON.stringify(g)) }
+function saveGroups(g: Group[]) { console.log('[MacroPanel] saveGroups key=omni-macro-groups data=', g); localStorage.setItem('omni-macro-groups', JSON.stringify(g)) }
 
 export default function MacroPanel({ searchTerm = '', onClose, onSendMacro }: Props) {
   const [cmds, setCmds] = useState<Command[]>(loadCmds)
@@ -159,7 +159,7 @@ export default function MacroPanel({ searchTerm = '', onClose, onSendMacro }: Pr
 
       {/* Context menu */}
       {ctx && (
-        <div className="fixed z-50 w-44 bg-vscode-input border border-vscode-border shadow-xl py-0.5" style={{ left: ctx.x, top: ctx.y }}>
+        <div className="fixed z-50 w-44 bg-vscode-input border border-vscode-border shadow-xl py-0.5 rounded" style={{ left: ctx.x, top: ctx.y }}>
           {ctx.type === 'cmd' && ctx.cmd && (
             <>
               <div className="px-3 py-1 text-[10px] text-vscode-text-dim truncate">{ctx.cmd.name}</div>

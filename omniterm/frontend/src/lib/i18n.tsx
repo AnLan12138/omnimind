@@ -151,6 +151,22 @@ export const t: TranslationMap = {
   needMoreDevices: { en: 'Need at least 2 connected devices', zh: '需要至少 2 台已连接设备' },
   tunnels: { en: 'Tunnels', zh: '隧道' },
   multiexec: { en: 'MultiExec', zh: '多路广播' },
+  automation: { en: 'Automation', zh: '自动化' },
+  noAutomation: { en: 'No automation tasks', zh: '暂无自动化任务' },
+  noAutomationHint: { en: 'Click the button above to create one', zh: '点击上方按钮创建自动化任务' },
+  aiAssistant: { en: 'AI Assistant', zh: 'AI 助手' },
+  templates: { en: 'Templates', zh: '模板' },
+  templatesHint: { en: 'Templates coming soon', zh: '模板功能即将推出' },
+  aiWelcome: { en: 'AI Network Operations Assistant', zh: 'AI 网络运维助手' },
+  aiWelcomeHint: { en: 'Ask me anything about network troubleshooting, device config, or command generation', zh: '输入问题，AI 会帮你分析网络问题、生成命令' },
+  aiPlaceholder: { en: 'Type a message, Enter to send, Shift+Enter for new line...', zh: '输入消息，Enter 发送，Shift+Enter 换行...' },
+  clearConversation: { en: 'Clear chat', zh: '清空对话' },
+  send: { en: 'Send', zh: '发送' },
+  aiProvider: { en: 'API Provider', zh: 'API 提供商' },
+  custom: { en: 'Custom', zh: '自定义' },
+  model: { en: 'Model', zh: '模型' },
+  testConnection: { en: 'Test Connection', zh: '测试连接' },
+  connectionOk: { en: 'Connected successfully', zh: '连接成功' },
 }
 
 interface I18nContextType {

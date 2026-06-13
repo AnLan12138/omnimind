@@ -1,6 +1,6 @@
 # 多协议远程客户端 — 设计文档
 
-> 代号: **OmniTerm**  
+> 代号: **OmniMind**  
 > 定位: MobaXterm 的开源替代品，更稳定、交互更人性化  
 > 目标: 一个应用整合 SSH / Telnet / RDP / VNC / FTP / SFTP / MOSH / X11 / Serial 所有常用远程协议
 
@@ -65,7 +65,7 @@ MobaXterm = 协议最全，但不稳定
 SecureCRT = 最稳定，但协议少
 Tabby     = UI 最好看，但功能弱
 
-OmniTerm = 协议量 ≈ MobaXterm × 稳定性 ≈ SecureCRT × UI ≈ Tabby
+OmniMind = 协议量 ≈ MobaXterm × 稳定性 ≈ SecureCRT × UI ≈ Tabby
 ```
 
 **三个核心差异化:**
@@ -592,9 +592,9 @@ type ProtocolFeatures struct {
 ## 六、目录结构
 
 ```
-omniterm/
+omnimind/
 ├── cmd/
-│   └── omniterm/
+│   └── omnimind/
 │       └── main.go                # Wails 应用入口
 ├── internal/
 │   ├── app/
@@ -917,12 +917,12 @@ CREATE TABLE macros (
 
 | 候选名称 | 含义 | 评价 |
 |---------|------|------|
-| **OmniTerm** | Omni(全) + Term(终端) | 直接、好记 |
+| **OmniMind** | Omni(全) + Mind(思维) | 直接、好记 |
 | **PolyTerm** | Poly(多) + Term | 强调多协议 |
 | **UniTerm** | Uni(统一) + Term | 统一终端 |
 | **MegaTerm** | Mega(巨大) + Term | 强调功能全 |
 
-**推荐: OmniTerm** — 简短、英文无歧义、Google 搜索无冲突。
+**推荐: OmniMind** — 简短、英文无歧义、Google 搜索无冲突。
 
 ---
 

@@ -1,4 +1,4 @@
-package ssh
+﻿package ssh
 
 import (
 	"context"
@@ -209,7 +209,8 @@ func (c *Client) Send(data []byte) error {
 			if b == '\r' || b == '\n' {
 				if c.onData != nil { c.onData([]byte("\r\n")) }
 				if c.authBuf != "" {
-					c.SendPassword(c.authBuf)
+					// 阻塞投递到等待中的回调 (pipe 缓冲区=10，永不阻塞)
+					c.interactivePipe <- c.authBuf
 					c.authBuf = ""
 				}
 			} else if b == 127 || b == '\b' {
@@ -305,21 +306,15 @@ func (c *Client) GetSFTPClient() (*ssh.Client, error) {
 func (c *Client) buildAuthMethods() []ssh.AuthMethod {
 	var methods []ssh.AuthMethod
 
-	// Use RetryableAuthMethod + PasswordCallback so the SSH library:
-	// 1. Sends "none" auth first
-	// 2. Waits for server's supported methods list
-	// 3. Only THEN calls the callback to get the password
-	// This matches OpenSSH's behavior exactly.
-	methods = append(methods, ssh.RetryableAuthMethod(ssh.PasswordCallback(func() (string, error) {
+	// Shared password-getter (prompts in terminal, waits for user input via interactivePipe)
+	getPassword := func(prompt string) (string, error) {
 		password := c.cfg.Password
 		if password != "" {
 			return password, nil
 		}
-		// No password stored - prompt user in terminal
 		if c.onData != nil {
-			c.onData([]byte("\r\n" + c.cfg.Username + "@" + c.cfg.Host + "'s password: "))
+			c.onData([]byte("\r\n" + prompt + " "))
 		}
-		// Wait for user to type password
 		select {
 		case pw := <-c.interactivePipe:
 			c.cfg.Password = pw
@@ -327,7 +322,29 @@ func (c *Client) buildAuthMethods() []ssh.AuthMethod {
 		case <-c.authCtx.Done():
 			return "", fmt.Errorf("auth cancelled")
 		}
-	}), 5)) // allow 5 retries
+	}
+
+	// 1. PasswordCallback + RetryableAuthMethod (handles "password" method servers)
+	//    For keyboard-interactive-only servers, the authenticate loop skips this
+	//    and falls through to method #2.
+	methods = append(methods, ssh.RetryableAuthMethod(ssh.PasswordCallback(func() (string, error) {
+		return getPassword(c.cfg.Username + "@" + c.cfg.Host + "'s password")
+	}), 3))
+
+	// 2. Keyboard-interactive for PAM-based servers (Ubuntu, etc.)
+	methods = append(methods, ssh.KeyboardInteractive(func(
+		user, instruction string, questions []string, echos []bool,
+	) ([]string, error) {
+		answers := make([]string, len(questions))
+		for i, q := range questions {
+			pw, err := getPassword(q)
+			if err != nil {
+				return nil, err
+			}
+			answers[i] = pw
+		}
+		return answers, nil
+	}))
 
 	if c.cfg.PrivateKeyPath != "" {
 		key, err := os.ReadFile(c.cfg.PrivateKeyPath)
@@ -367,18 +384,33 @@ func (c *Client) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
 	home, _ := os.UserHomeDir()
 	knownHostsPath := home + "/.ssh/known_hosts"
 
-	f, err := os.Open(knownHostsPath)
-	if err != nil {
-		// No known_hosts file - accept all (like StrictHostKeyChecking=no)
-		return ssh.InsecureIgnoreHostKey(), nil
-	}
-	defer f.Close()
+	// Ensure .ssh directory exists
+	sshDir := home + "/.ssh"
+	os.MkdirAll(sshDir, 0700)
 
-	hostKeyCallback, err := knownhosts.New(knownHostsPath)
+	// Check if known_hosts exists and has this host
+	cb, err := knownhosts.New(knownHostsPath)
 	if err != nil {
+		// No valid known_hosts — accept all (StrictHostKeyChecking=no)
 		return ssh.InsecureIgnoreHostKey(), nil
 	}
-	return hostKeyCallback, nil
+
+	// Try to verify; if unknown, auto-add to known_hosts (TOFU — Trust On First Use)
+	addr := fmt.Sprintf("%s:%d", c.cfg.Host, c.cfg.Port)
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := cb(hostname, remote, key)
+		if err == nil {
+			return nil // known and matches
+		}
+		// Key is unknown — save and accept
+		line := knownhosts.Line([]string{addr}, key)
+		f, ferr := os.OpenFile(knownHostsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if ferr == nil {
+			f.WriteString(line + "\n")
+			f.Close()
+		}
+		return nil // accept the key
+	}, nil
 }
 
 func (c *Client) dialViaJump(ctx context.Context, jump, target string, targetCfg *ssh.ClientConfig) (net.Conn, error) {
@@ -474,6 +506,14 @@ func (c *Client) keepAlive(ctx context.Context, interval time.Duration) {
 // Latency returns the last measured round-trip time in milliseconds
 func (c *Client) Latency() int64 {
 	return atomic.LoadInt64(&c.latencyNs) / 1e6
+}
+
+// Banner returns the SSH server version string (e.g. "SSH-2.0-Cisco-1.25").
+func (c *Client) Banner() string {
+    if c.conn != nil {
+        return string(c.conn.ServerVersion())
+    }
+    return ""
 }
 
 func (c *Client) waitSession(ctx context.Context) {

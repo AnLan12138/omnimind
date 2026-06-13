@@ -1,1 +1,46 @@
+# --- IDE ---
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Go ---
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+vendor/
+
+# --- Node / Frontend ---
+node_modules/
+frontend/dist/
+frontend/node_modules/
+*.tsbuildinfo
+
+# --- Wails Build Output ---
+build/bin/
+build/tmp/
+build/windows/installer/tmp/
+
+# --- Environment ---
+.env
+.env.local
+.env.*.local
+
+# --- Logs ---
+*.log
+
+# --- Archive ---
+*.zip
+*.tar.gz
+*.7z
