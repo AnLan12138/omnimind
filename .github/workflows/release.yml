@@ -25,19 +25,19 @@ jobs:
             os: windows
             runner: windows-latest
             arch: amd64
-            arch_name: x64
+            arch_name: amd64
             ext: .exe
           - label: Linux
             os: linux
             runner: ubuntu-22.04
             arch: amd64
-            arch_name: x64
+            arch_name: amd64
             ext: ""
           - label: macOS-Intel
             os: darwin
             runner: macos-latest
             arch: amd64
-            arch_name: x64
+            arch_name: amd64
             ext: ""
           - label: macOS-AppleSilicon
             os: darwin
